@@ -45,25 +45,6 @@ AC_ARG_WITH([ld-libdir],
 )
 AC_SUBST(LD_LIBDIR)
 
-# Check grid-metautils
-AC_ARG_WITH([metautils],
-  AS_HELP_STRING([--with-metautils=DIR], [Grid metautils install directory (default: PREFIX)]),
-  [METAUTILS_DIR=$withval],
-  [METAUTILS_DIR=/usr/local]
-)
-AC_ARG_WITH([metautils-lib],
-  AS_HELP_STRING([--with-metautils-lib=DIR], [Grid metautils libraries directory (default: PREFIX/LD_LIBDIR)]),
-  [METAUTILS_LIBDIR=$withval],
-  [METAUTILS_LIBDIR=$METAUTILS_DIR/$LD_LIBDIR]
-)
-AC_SUBST(METAUTILS_DIR)
-AC_SUBST(METAUTILS_LIBDIR)
-AC_CHECK_FILE([$METAUTILS_DIR/include/metatypes.h],, [AC_MSG_ERROR([not found])])
-AC_CHECK_FILE([$METAUTILS_DIR/include/metautils.h],, [AC_MSG_ERROR([not found])])
-AC_CHECK_FILE([$METAUTILS_DIR/include/metacomm.h],,  [AC_MSG_ERROR([not found])])
-AC_CHECK_FILE([$METAUTILS_LIBDIR/libmetacomm.so],,   [AC_MSG_ERROR([not found])])
-AC_CHECK_FILE([$METAUTILS_LIBDIR/libmetautils.so],,  [AC_MSG_ERROR([not found])])
-
 # 
 AC_ARG_WITH([libevent],
   AS_HELP_STRING([--with-libevent=DIR],
