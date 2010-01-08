@@ -28,6 +28,7 @@
 
 #include <gridinit-utils.h>
 #include "./gridinit_internals.h"
+#include "./gridinit_alerts.h"
 #include "../lib/gridinit-internals.h"
 
 #ifdef HAVE_EXTRA_DEBUG
@@ -48,6 +49,7 @@ struct server_sock_s {
 };
 
 static GList *list_of_servers = NULL;
+static GList *list_of_signals = NULL; /* list of libevent events */
 
 static char sock_path[1024];
 static char pidfile_path[1024];
@@ -56,14 +58,59 @@ static char *config_path;
 static volatile int flag_quiet = 0;
 static volatile int flag_daemon = 0;
 static volatile int flag_running = ~0;
-static volatile int flag_reconfigure = 0;
+static volatile int flag_cfg_reload = 0;
 static volatile int flag_check_socket = 0;
-static volatile int flag_restart_children = 0;
+static volatile int flag_catharsis = 0;
 
-static gboolean _reconfigure(gboolean services_only, GError **err);
+static gboolean _cfg_reload(gboolean services_only, GError **err);
 
 static void servers_ensure(void);
 
+/* Process management helpers ---------------------------------------------- */
+
+static guint
+__alert_processes_not_respawned(void)
+{
+	guint count;
+	void run_service(void *udata, struct child_info_s *ci) {
+		gchar buff[1024];
+
+		(void) udata;
+		if (ci->enabled && ci->respawn && ci->pid < 0) {
+			g_snprintf(buff, sizeof(buff),
+				"Process not respawned [%s] %s",
+				ci->key, ci->cmd);
+			gridinit_alerting_send(GRIDINIT_EVENT_NOTRESPAWNED, buff);
+			count ++;
+		}
+	}
+
+	count = 0;
+	supervisor_run_services(NULL, run_service);
+	return count;
+}
+
+static void
+alert_proc_died(void *udata, struct child_info_s *ci)
+{
+	gchar buff[1024];
+
+	(void) udata;
+	g_snprintf(buff, sizeof(buff), "Process died pid=%d [%s] %s",
+		ci->pid, ci->key, ci->cmd);
+	gridinit_alerting_send(GRIDINIT_EVENT_DIED, buff);
+}
+
+static void
+alert_proc_started(void *udata, struct child_info_s *ci)
+{
+	gchar buff[1024];
+
+	(void) udata;
+	g_snprintf(buff, sizeof(buff), "Process started pid=%d [%s] %s",
+		ci->pid, ci->key, ci->cmd);
+	gridinit_alerting_send(GRIDINIT_EVENT_STARTED, buff);
+}
 
 /* COMMANDS management ----------------------------------------------------- */
 
@@ -130,7 +177,7 @@ command_start(struct bufferevent *bevent, int argc, char **argv)
 		if (count_ko)
 			__reply_sprintf(bevent, "No process started, there were %u errors\n", count_ko);
 		else {
-			guint count = supervisor_children_startall();
+			guint count = supervisor_children_startall(NULL, alert_proc_started);
 			__reply_sprintf(bevent, "Started %u processes\n", count);
 		}
 	}
@@ -190,12 +237,16 @@ command_show(struct bufferevent *bevent, int argc, char **argv)
 {
 	void run_service(void *udata, struct child_info_s *ci) {
 		gsize buff_size;
-		gchar buff[1024];
+		gchar buff[2048];
 		
 		(void) udata;
-		buff_size = g_snprintf(buff, sizeof(buff), "%5d %d %5d %5d %s %s\n",
+		buff_size = g_snprintf(buff, sizeof(buff), "%d %d %u %u %ld %ld %ld %ld %u %u %s %s\n",
 			ci->pid, ci->enabled,
-			ci->counter_started, ci->counter_died, ci->key, ci->cmd);
+			ci->counter_started, ci->counter_died,
+			ci->last_start_attempt, ci->rlimits.core_size, ci->rlimits.stack_size, ci->rlimits.nb_files,
+			ci->uid, ci->gid,
+			ci->key, ci->cmd);
+		TRACE("status line [%.*s]", buff_size-1, buff);
 		bufferevent_write(bevent, buff, buff_size);
 	}
 
@@ -218,7 +269,7 @@ command_reload(struct bufferevent *bevent, int argc, char **argv)
 	count = supervisor_children_mark_obsolete();
 	__reply_sprintf(bevent, "Marked %u obsolete services\n", count);
 
-	if (!_reconfigure(TRUE, &error_local)) {
+	if (!_cfg_reload(TRUE, &error_local)) {
 		__reply_sprintf(bevent, "error: Failed to reload the configuration from [%s]\n", config_path);
 		__reply_sprintf(bevent, "cause: %s\n", error_local ? error_local->message : "NULL");
 
@@ -233,7 +284,7 @@ command_reload(struct bufferevent *bevent, int argc, char **argv)
 		count = supervisor_children_kill_disabled();
 		__reply_sprintf(bevent, "Killed %u disabled services\n", count);
 
-		count = supervisor_children_startall();
+		count = supervisor_children_startall(NULL, alert_proc_started);
 		__reply_sprintf(bevent, "Started %u new processes\n", count);
 
 		REPLY_STR_CONTANT(bevent, "Done!\n\n");
@@ -299,7 +350,7 @@ __resolve_command(const gchar *n)
 }
 
 
-/* ------------------------------------------------------------------------- */
+/* Libevent callbacks ------------------------------------------------------ */
 
 static void
 supervisor_signal_handler(int s, short flags, void *udata)
@@ -310,7 +361,7 @@ supervisor_signal_handler(int s, short flags, void *udata)
 	switch (s) {
 	case SIGUSR1: /* ignored */
 		return;
-	case SIGUSR2: /* ignored */
+	case SIGUSR2: 
 		flag_check_socket = ~0;
 		return;
 	case SIGPIPE: /* ignored */
@@ -319,11 +370,10 @@ supervisor_signal_handler(int s, short flags, void *udata)
 	case SIGQUIT:
 	case SIGKILL:
 	case SIGTERM:
-		flag_running = FALSE;
+		flag_running = 0;
 		return;
 	case SIGCHLD:
-		if (0 < supervisor_children_catharsis())
-			flag_restart_children = ~0;
+		flag_catharsis = ~0;
 		return;
 	}
 }
@@ -517,10 +567,11 @@ __event_accept(int fd, short flags, void *udata)
 	INFO("Connection accepted : accept(%d) = %d", fd, fd_client);
 }
 
+
 /* Server socket pool management ------------------------------------------- */
 
 static int
-__servers_is_unix(struct server_sock_s *server)
+servers_is_unix(struct server_sock_s *server)
 {
 	struct sockaddr_storage ss;
 	socklen_t ss_len;
@@ -542,7 +593,7 @@ __servers_is_unix(struct server_sock_s *server)
 }
 
 static int
-__servers_is_the_same(struct server_sock_s *server)
+servers_is_the_same(struct server_sock_s *server)
 {
 	struct stat stat_sock, stat_path;
 	
@@ -556,7 +607,7 @@ __servers_is_the_same(struct server_sock_s *server)
 }
 
 static void
-__servers_unmonitor(struct server_sock_s *server)
+servers_unmonitor_one(struct server_sock_s *server)
 {
 	if (server->fd < 0) {
 		/* server socket already stopped */
@@ -564,13 +615,14 @@ __servers_unmonitor(struct server_sock_s *server)
 	}
 
 	/* Stop the libevent management right now */	
-	event_del(&(server->event));
+	if (event_pending(&(server->event), EV_READ, NULL))
+		event_del(&(server->event));
 
 	/* If the current socket is a UNIX socket, remove the socket file
 	 * on disk only if this file is exactly the same that the file
 	 * this socket created. We must avoid deleting a socket file
 	 * opened by another process */
-	if (__servers_is_unix(server) && __servers_is_the_same(server))
+	if (servers_is_unix(server) && servers_is_the_same(server))
 		unlink(server->url);
 
 	shutdown(server->fd, SHUT_RDWR);
@@ -581,7 +633,7 @@ __servers_unmonitor(struct server_sock_s *server)
 /* starts the server monitoring with the libevent.
  * The inner file descriptor must be a valid socket filedes */
 static gboolean
-__servers_monitor(struct server_sock_s *server)
+servers_monitor_one(struct server_sock_s *server)
 {
 	struct sockaddr_storage ss;
 	socklen_t ss_len;
@@ -646,7 +698,7 @@ servers_monitor_none(void)
 	TRACE("About to stop all the server sockets");
 	for (l=list_of_servers; l ;l=l->next) {
 		struct server_sock_s *s = l->data;
-		__servers_unmonitor(s);
+		servers_unmonitor_one(s);
 	}
 
 	errno = 0;
@@ -661,7 +713,7 @@ servers_monitor_all(void)
 	
 	for (l=list_of_servers; l ;l=l->next) {
 		struct server_sock_s *s = l->data;
-		if (!__servers_monitor(s))
+		if (!servers_monitor_one(s))
 			return FALSE;
 	}
 
@@ -758,10 +810,10 @@ servers_ensure(void)
 
 		NOTICE("Ensuring socket fd=%d bond to [%s]", p_server->fd, p_server->url);
 
-		if (__servers_is_unix(p_server) && !__servers_is_the_same(p_server)) {
+		if (servers_is_unix(p_server) && !servers_is_the_same(p_server)) {
 
 			/* close */
-			__servers_unmonitor(p_server);
+			servers_unmonitor_one(p_server);
 
 			/* reopen */
 			p_server->fd = __open_unix_server(p_server->url);
@@ -769,13 +821,38 @@ servers_ensure(void)
 				WARN("unix: failed to reopen a server bond to [%s] : %s",
 						p_server->url, strerror(errno));
 			}
-			else if (!__servers_monitor(p_server)) {
+			else if (!servers_monitor_one(p_server)) {
 				WARN("unix: failed to monitor a server bond to [%s] : %s",
 						p_server->url, strerror(errno));
-				__servers_unmonitor(p_server);
+				servers_unmonitor_one(p_server);
 			}
 		}
 	}
+}
+
+/* Signals management ------------------------------------------------------ */
+
+static void
+signals_manage(int s)
+{
+	struct event *signal_event;
+	signal_event = g_malloc0(sizeof(*signal_event));
+	event_set(signal_event, s, EV_SIGNAL|EV_PERSIST, supervisor_signal_handler, NULL);
+	event_add(signal_event, NULL);
+	list_of_signals = g_list_prepend(list_of_signals, signal_event);
+}
+
+static void
+signals_clean(void)
+{
+	GList *l;
+	for (l=list_of_signals; l ;l=l->next) {
+		struct event *signal_event = l->data;
+		g_free(signal_event);
+		l->data = NULL;
+	}
+	g_list_free(list_of_signals);
+	list_of_signals = NULL;
 }
 
 /* Configuration ----------------------------------------------------------- */
@@ -791,8 +868,37 @@ _cfg_value_is_true(const gchar *val)
 		|| 0==g_ascii_strcasecmp(val,"on"));
 }
 
+static GHashTable*
+_cfg_extract_parameters (GKeyFile *kf, const char *s, const char *p, GError **err)
+{
+	gchar **all_keys=NULL, **current_key=NULL;
+	gsize size=0;
+	GHashTable *ht=NULL;
+
+	ht = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, g_free);
+
+	all_keys = g_key_file_get_keys (kf, s, &size, err);
+	if (!all_keys)
+		goto error;
+	for (current_key=all_keys; current_key && *current_key ;current_key++) {
+		if (!g_ascii_strcasecmp(*current_key,p)) {
+			gchar *value = g_key_file_get_value (kf, s, *current_key, err);
+			g_hash_table_insert (ht, g_strdup(*current_key + strlen(p)), value);
+		}
+	}
+
+	g_strfreev(all_keys);
+	return ht;
+error:
+	if (ht)
+		g_hash_table_destroy(ht);
+	if (all_keys)
+		g_strfreev(all_keys);
+	return NULL;
+}
+
 static gboolean
-_reload_service(GKeyFile *kf, const gchar *section, GError **err)
+_cfg_section_service(GKeyFile *kf, const gchar *section, GError **err)
 {
 	gboolean rc = FALSE, rc_enable;
 	gchar *str_key;
@@ -825,7 +931,61 @@ label_exit:
 }
 
 static gboolean
-_reconfigure_default_section(GKeyFile *kf, const gchar *section, GError **err)
+_cfg_section_alert(GKeyFile *kf, const gchar *section, GError **err)
+{
+	gchar cfg_plugin[1024], cfg_symbol[128];
+	gchar **p_key, **keys;
+
+	bzero(cfg_plugin, sizeof(cfg_plugin));
+	bzero(cfg_symbol, sizeof(cfg_symbol));
+
+	keys = g_key_file_get_keys(kf, section, NULL, err);
+	if (!keys)
+		return FALSE;
+
+	for (p_key=keys; *p_key ;p_key++) {
+		gchar *str;
+
+		str = g_key_file_get_string(kf, section, *p_key, NULL);
+		
+		if (!g_ascii_strcasecmp(*p_key, "plugin")) {
+			if (*cfg_plugin)
+				ERROR("Alerting plugin already known : plugin=[%s]", cfg_plugin);
+			else
+				g_strlcpy(cfg_plugin, str, sizeof(cfg_plugin)-1);
+		}
+		else if (!g_ascii_strcasecmp(*p_key, "symbol")) {
+			if (*cfg_symbol)
+				ERROR("Alerting symbol already known : symbol=[%s]", cfg_symbol);
+			else
+				g_strlcpy(cfg_symbol, str, sizeof(cfg_symbol)-1);
+		}
+
+		g_free(str);
+	}
+
+	g_strfreev(keys);
+
+	if (!*cfg_symbol || !*cfg_plugin) {
+		ERROR("Missing configuration keys : both \"plugin\" and \"symbol\""
+			" must be present in section [%s]", section);
+		return FALSE;
+	}
+	else {
+		GHashTable *ht_params;
+		gboolean rc;
+		ht_params = _cfg_extract_parameters(kf, section, "config.", err);
+		rc = gridinit_alerting_configure(cfg_plugin, cfg_symbol, ht_params, err);
+		g_hash_table_destroy(ht_params);
+		if (!rc)
+			return FALSE;
+	}
+	
+	return TRUE;
+}
+
+static gboolean
+_cfg_section_default(GKeyFile *kf, const gchar *section, GError **err)
 {
 	GError *error_local = NULL;
 	gchar buf_user[256], buf_group[256];
@@ -838,7 +998,7 @@ _reconfigure_default_section(GKeyFile *kf, const gchar *section, GError **err)
 	if (!keys)
 		return FALSE;
 
-	/* Load the system limit and the pidfule path */
+	/* Load the system limit and the pidfile path */
 	for (p_key=keys; *p_key ;p_key++) {
 		gchar *str;
 
@@ -893,7 +1053,7 @@ _reconfigure_default_section(GKeyFile *kf, const gchar *section, GError **err)
 }
 
 static gboolean
-_reconfigure(gboolean services_only, GError **err)
+_cfg_reload(gboolean services_only, GError **err)
 {
 	gboolean rc = FALSE;
 	gchar **groups=NULL, **p_group=NULL;
@@ -914,18 +1074,18 @@ _reconfigure(gboolean services_only, GError **err)
 	
 	for (p_group=groups; *p_group ;p_group++) {
 		if (g_str_has_prefix(*p_group, "service.")) {
-			TRACE("reconfigure : managing section [%s]", *p_group);
-			if (!_reload_service(kf, *p_group, err))
+			INFO("reconfigure : managing service section [%s]", *p_group);
+			if (!_cfg_section_service(kf, *p_group, err))
 				goto label_exit;
 		}
-		else if (!g_ascii_strcasecmp(*p_group, "default")) {
-			if (services_only) {
-				TRACE("reconfigure : skipping section [%s]", *p_group);
-				continue;
-			}
-			
-			TRACE("reconfigure : loadig main parameters from section [%s]", *p_group);
-			if (!_reconfigure_default_section(kf, *p_group, err))
+		else if (!services_only && !g_ascii_strcasecmp(*p_group, "default")) {
+			INFO("reconfigure : loading main parameters from section [%s]", *p_group);
+			if (!_cfg_section_default(kf, *p_group, err))
+				goto label_exit;
+		}
+		else if (!services_only && !g_ascii_strcasecmp(*p_group, "alerts")) {
+			INFO("reconfigure : loading alerting parameters from section [%s]", *p_group);
+			if (!_cfg_section_alert(kf, *p_group, err))
 				goto label_exit;
 		}
 		else {
@@ -990,7 +1150,7 @@ __parse_options(int argc, char ** args)
 	config_path = g_strdup(args[optind]);
 	if (!flag_quiet)
 		g_printerr("Reading the config from [%s]\n", config_path);
-	if (!_reconfigure(FALSE, &error_local)) {
+	if (!_cfg_reload(FALSE, &error_local)) {
 		if (!flag_quiet)
 			g_printerr("Configuration loading error from [%s] : %s\n", config_path, error_local->message);
 		exit(1);	
@@ -1013,15 +1173,6 @@ write_pid_file(void)
 
 	fprintf(stream_pidfile, "%d", getpid());
 	fclose(stream_pidfile);
-}
-
-static void
-__manage_signal(int s)
-{
-	struct event *signal_event;
-	signal_event = g_malloc0(sizeof(*signal_event));
-	event_set(signal_event, s, EV_SIGNAL|EV_PERSIST, supervisor_signal_handler, NULL);
-	event_add(signal_event, NULL);
 }
 
 int
@@ -1051,13 +1202,13 @@ main(int argc, char ** args)
 	/* Starts the network and the signal management */
 	DEBUG("Initiating the network and signals management");
 	libevents_handle = event_init();
-	__manage_signal(SIGTERM);
-	__manage_signal(SIGABRT);
-	__manage_signal(SIGINT);
-	__manage_signal(SIGQUIT);
-	__manage_signal(SIGUSR1);
-	__manage_signal(SIGUSR2);
-	__manage_signal(SIGCHLD);
+	signals_manage(SIGTERM);
+	signals_manage(SIGABRT);
+	signals_manage(SIGINT);
+	signals_manage(SIGQUIT);
+	signals_manage(SIGUSR1);
+	signals_manage(SIGUSR2);
+	signals_manage(SIGCHLD);
 	if (!servers_monitor_all()) {
 		ERROR("Failed to monitor the server sockets");
 		exit(1);
@@ -1068,38 +1219,52 @@ main(int argc, char ** args)
 		guint proc_count;
 
 		/* start all the enabled processes */
-		proc_count = supervisor_children_startall();
+		proc_count = supervisor_children_startall(NULL, alert_proc_started);
 		DEBUG("First started %u processes", proc_count);
 
 		while (flag_running) {
-
-			if (flag_restart_children) {
-				proc_count = supervisor_children_startall();
-				DEBUG("Started %u processes", proc_count);
-				flag_restart_children = 0;
+			
+			/* Ma,age the events that occured */
+			if (flag_catharsis) {
+				proc_count = supervisor_children_catharsis(NULL, alert_proc_died);
+				if (proc_count) {
+					DEBUG("Recycled %u processes", proc_count);
+					proc_count = supervisor_children_startall(NULL, alert_proc_started);
+					DEBUG("Started %u processes", proc_count);
+				}
+				else {
+					WARN("Recycled no process");
+				}
+				flag_catharsis = 0;
 			}
 
+			if (flag_check_socket)
+				servers_ensure();
+			
 			/* Manages the connections pool */
 			if (0 > event_loop(EVLOOP_ONCE)) {
 				ERROR("event_loop() error : %s", strerror(errno));
 				break;
 			}
 
-			if (flag_check_socket)
-				servers_ensure();
+			(void) __alert_processes_not_respawned();
 		}
 	} while (0);
 
 	/* stop all the processes */
 	DEBUG("Stopping all the children");
-	supervisor_children_stopall(4);
-	supervisor_children_catharsis();
+	(void) supervisor_children_stopall(4);
+	(void) supervisor_children_catharsis(NULL, alert_proc_died);
 
 	/* clean the working structures */
 	DEBUG("Cleaning the working structures");
 	event_base_free(libevents_handle);
 	supervisor_children_cleanall();
 	servers_clean();
+	signals_clean();
+	g_free(config_path);
+	gridinit_alerting_close();
+
 	return 0;
 }
 

@@ -9,9 +9,9 @@ CFLAGS+= -DHAVE_EXTRA_DEBUG=1
 
 LDFLAGS = -L@LIBEVENT_LIBDIR@
 
-gridinit_SOURCES = gridinit.c cnx.c gridinit_internals.h
+gridinit_SOURCES = gridinit.c cnx.c alerting.c gridinit_alerts.h gridinit_internals.h
 gridinit_LDADD = -llog4c -levent $(GLIB_LIBS) ../lib/libgridinit-utils.la
 
 gridinit_cmd_SOURCES = gridinit_cmd.c cnx.c gridinit_internals.h
-gridinit_cmd_LDADD = -llog4c -levent $(GLIB_LIBS)
+gridinit_cmd_LDADD = -llog4c $(GLIB_LIBS)
 

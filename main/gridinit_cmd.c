@@ -15,8 +15,6 @@
 #include <unistd.h>
 #include <sys/socket.h>
 
-#include <event.h>
-#include <log4c.h>
 #include <glib.h>
 
 #include "./gridinit_internals.h"
@@ -25,176 +23,313 @@
 #define EV_FLAG(F) ((F)|EV_PERSIST)
 
 static gchar sock_path[1024];
+static gchar line[65536];
 
-static int in_fd = -1;
-static struct bufferevent *in_bevent = NULL;
+static char *argv_status_normal[] = {
+	"status",
+	NULL
+};
 
-static int out_fd = -1;
-static struct bufferevent *out_bevent = NULL;
+static char *argv_status_full[] = {
+	"status",
+	"-a",
+	NULL
+};
+
+#define ARGCARGV_STATUS_NORMAL 1, argv_status_normal
+#define ARGCARGV_STATUS_FULL   2, argv_status_full
+
+struct child_info_s {
+	char *key;
+	char *cmd;
+	gint pid;
+	guint uid;
+	guint gid;
+	gboolean enabled;
+	gboolean respawn;
+	time_t last_start_attempt;
+	time_t last_kill_attempt;
+	guint counter_started;
+	guint counter_died;
+	struct {
+		long core_size;
+		long stack_size;
+		long nb_files;
+	} rlimits;
+};
+
+static gint
+compare_child_info(gconstpointer p1, gconstpointer p2)
+{
+	const struct child_info_s *c1, *c2;
+	c1 = p1;
+	c2 = p2;
+	return g_strcasecmp(c1->key, c2->key);
+}
+
+static size_t
+get_longest_key(GList *all_jobs)
+{
+	size_t maxlen = 5;
+	GList *l;
+	for (l=all_jobs; l ;l=l->next) {
+		struct child_info_s *ci = l->data;
+		size_t len = strlen(ci->key);
+		if (len > maxlen)
+			maxlen = len;
+	}
+	return maxlen;
+}
+
+static GList*
+read_services_list(FILE *in_stream)
+{
+	GList *all_jobs = NULL;
+
+	while (!feof(in_stream) && !ferror(in_stream)) {
+		if (NULL != fgets(line, sizeof(line), in_stream)) {
+			int len = strlen(line);
+			if (line[len-1] == '\n' || line[len-1]=='\r')
+				line[--len] = '\0';
+			gchar **tokens = g_strsplit(line, " ", 12);
+			if (tokens) {
+				if (g_strv_length(tokens) == 12) {
+					struct child_info_s ci;
+					ci.pid = atoi(tokens[0]);
+					ci.enabled = atoi(tokens[1]) != 0;
+					ci.counter_started = atoi(tokens[2]);
+					ci.counter_died = atoi(tokens[3]);
+					ci.last_start_attempt = atol(tokens[4]);
+					ci.rlimits.core_size = atol(tokens[5]);
+					ci.rlimits.stack_size = atol(tokens[6]);
+					ci.rlimits.nb_files = atol(tokens[7]);
+					ci.uid = atol(tokens[8]);
+					ci.gid = atol(tokens[9]);
+					ci.key = g_strdup(tokens[10]);
+					ci.cmd = g_strdup(tokens[11]);
+					all_jobs = g_list_prepend(all_jobs,
+						g_memdup(&ci, sizeof(struct child_info_s)));
+				}
+				g_strfreev(tokens);
+			}
+		}
+	}
+
+	return g_list_sort(all_jobs, compare_child_info);
+}
 
 static void
-__close_bevent(struct bufferevent **bevent, int *fd)
+dump_as_is(FILE *in_stream, void *udata)
 {
-	if (bevent && *bevent) {
-		bufferevent_disable(*bevent, EV_READ);
-		bufferevent_disable(*bevent, EV_WRITE);
-		shutdown(*fd, SHUT_RDWR);
-		close(*fd);
-		bufferevent_free(*bevent);
-
-		*fd = -1;
-		*bevent = NULL;
+	(void) udata;
+	while (!feof(in_stream) && !ferror(in_stream)) {
+		if (NULL != fgets(line, sizeof(line), in_stream)) {
+			int len = strlen(line);
+			if (line[len-1] == '\n' || line[len-1]=='\r')
+				line[--len] = '\0';
+			write(1, line, len);
+			write(1, "\n", 1);
+		}
 	}
 }
 
 static void
-__event_in(struct bufferevent *p_bevent, void *udata)
+dump_status(FILE *in_stream, void *udata)
 {
-	size_t read_size;
-	static gchar buff[2048];
-	(void) udata;
+	char fmt_title[256], fmt_line[256], fmt_title_full[256], fmt_line_full[256];
+	size_t maxlen;
+	gboolean flag_full;
+	GList *all_jobs = NULL, *l;
 
-	TRACE("Input buffer available for fd=%d", *(int*)udata);
+	flag_full = *(gboolean*)udata;
+	all_jobs = read_services_list(in_stream);
 
-	if (p_bevent == out_bevent) {
-		/* This should never happen */
-		abort();
-	}
-	
-	read_size = bufferevent_read(p_bevent, buff, sizeof(buff));
-	if (0 != bufferevent_write(out_bevent, buff, read_size)) {
-		TRACE("Invalid output buffer : %s", strerror(errno));
-		__close_bevent(&in_bevent, &in_fd);
-		__close_bevent(&out_bevent, &out_fd);
-	}
-	else {
-		/* restore read from input */
-		bufferevent_enable(in_bevent, EV_FLAG(EV_READ));
-		bufferevent_disable(in_bevent, EV_WRITE);
+	maxlen = get_longest_key(all_jobs);
+	g_snprintf(fmt_title, sizeof(fmt_title), "#%%%us %%6s %%5s %%6s %%5s %%19s %%s\n", maxlen-1);
+	g_snprintf(fmt_line, sizeof(fmt_line),    "%%%us %%6s %%5d %%6d %%5d %%19s %%s\n", maxlen);
+	g_snprintf(fmt_title_full, sizeof(fmt_title_full), "#%%%us %%6s %%5s %%6s %%5s %%5s %%5s %%5s %%19s %%s\n", maxlen-1);
+	g_snprintf(fmt_line_full, sizeof(fmt_line_full),    "%%%us %%6s %%5d %%6d %%5d %%5ld %%5ld %%5ld %%19s %%s\n", maxlen);
 
-		/* enable writing to output */
-		bufferevent_disable(out_bevent, EV_READ);
-		bufferevent_enable(out_bevent, EV_FLAG(EV_WRITE));
-	}
-}
+	/* Dump the list */
+	if (flag_full)
+		fprintf(stdout, fmt_title_full, "KEY", "STATUS", "PID", "#START", "#DIED",
+			"CSZ", "SSZ", "MFD", "SINCE", "CMD");
+	else
+		fprintf(stdout, fmt_title, "KEY", "STATUS", "PID", "#START", "#DIED",
+			"SINCE", "CMD");
 
-static void
-__event_out(struct bufferevent *p_bevent, void *udata)
-{
-	(void) udata;
-
-	TRACE("Output buffer empty for fd=%d", *(int*)udata);
-
-	if (p_bevent == out_bevent) {
-		/* the output buffer is empty ... nothing to do and wait
-		 * for input data if the input is not down */
-		if (in_bevent) {
-			TRACE("Waiting for input");
-			bufferevent_disable(out_bevent, EV_READ);
-			bufferevent_disable(out_bevent, EV_WRITE);
+	for (l=all_jobs; l ;l=l->next) {
+		char str_time[20] = "---------- --------";
+		struct child_info_s *ci;
 		
-			bufferevent_enable(in_bevent, EV_FLAG(EV_READ));
-			bufferevent_disable(in_bevent, EV_WRITE);
-		}
-		else {
-			TRACE("Closing both endpoints");
-			__close_bevent(&in_bevent, &in_fd);
-			__close_bevent(&out_bevent, &out_fd);
-		}
-		return;
+		ci = l->data;
+		if (ci->pid >= 0)
+			strftime(str_time, sizeof(str_time), "%Y-%m-%d %H:%M:%S",
+				gmtime(&(ci->last_start_attempt)));
+		if (flag_full)
+			fprintf(stdout, fmt_line_full,
+				ci->key, (ci->enabled ? "ON":"OFF"), ci->pid,
+				ci->counter_started, ci->counter_died,
+				ci->rlimits.core_size, ci->rlimits.stack_size, ci->rlimits.nb_files,
+				str_time, ci->cmd);
+		else
+			fprintf(stdout, fmt_line,
+				ci->key, (ci->enabled ? "ON":"OFF"), ci->pid,
+				ci->counter_started, ci->counter_died,
+				str_time, ci->cmd);
+	}
+	fflush(stdout);
+
+	/* free anything */
+	for (l=all_jobs; l ;l=l->next) {
+		struct child_info_s *ci = l->data;
+		g_free(ci->key);
+		g_free(ci->cmd);
+		g_free(ci);
+		l->data = NULL;
+	}
+	
+	g_list_free(all_jobs);
+	all_jobs = NULL;
+}
+
+static FILE*
+open_cnx(void)
+{
+	int req_fd = -1;
+	FILE *req_stream = NULL;
+	if (-1 == (req_fd = __open_unix_client(sock_path))) {
+		g_printerr("Connection to UNIX socket [%s] failed : %s\n", sock_path, strerror(errno));
+		return NULL;
 	}
 
-	if (p_bevent == in_bevent) {
+	if (NULL == (req_stream = fdopen(req_fd, "a+"))) {
+		g_printerr("Connection to UNIX socket [%s] failed : %s\n", sock_path, strerror(errno));
+		close(req_fd);
+		return NULL;
+	}
 
-		TRACE("Request sent, waiting reply from the server");
+	return req_stream;
+}
 
-		/* The command has been sent, now enable only reading from this end */
-		bufferevent_enable(in_bevent, EV_FLAG(EV_READ));
-		bufferevent_disable(in_bevent, EV_WRITE);
-		/* nothing to write yet */
-		bufferevent_disable(out_bevent, EV_READ);
-		bufferevent_disable(out_bevent, EV_WRITE);
-		return;
+static void
+send_commandf(void (*dumper)(FILE *, void *), void *udata, const char *fmt, ...)
+{
+	va_list va;
+	FILE *req_stream;
+	
+	if (NULL != (req_stream = open_cnx())) {
+
+		va_start(va, fmt);
+		vfprintf(req_stream, fmt, va);
+		va_end(va);
+
+		fflush(req_stream);
+		dumper(req_stream, udata);
+		fclose(req_stream);
 	}
 }
 
 static void
-__event_error(struct bufferevent *p_bevent, short flags, void *udata)
+send_commandv(void (*dumper)(FILE *, void*), void *udata, int argc, char **args)
 {
-	int in_down, out_down;
-	(void) p_bevent;
-	(void) udata;
-	(void) flags;
-
-	TRACE("Connection down for fd=%d", *(int*)udata);
+	int i;
+	FILE *req_stream;
 	
-	in_down = (p_bevent == in_bevent);
-	out_down = (p_bevent == out_bevent);
-	
-	/* close the output if it is concerned */
-	if (out_down)
-		__close_bevent(&out_bevent, &out_fd);
+	if (NULL != (req_stream = open_cnx())) {
+		for (i=0; i<argc ;i++) {
+			fputs(args[i], req_stream);
+			fputc(' ', req_stream);
+		}
+		fputc('\n', req_stream);
 
-	/* If the output is down, we close everything! */
-	if (in_down || out_down)
-		__close_bevent(&in_bevent, &in_fd);
+		fflush(req_stream);
+		dumper(req_stream, udata);
+		fclose(req_stream);
+	}
 }
+
+static int
+command_status(int argc, char **args)
+{
+	gboolean flag_all;
+	
+	flag_all = (argc >= 2) && 0 == g_ascii_strcasecmp(args[1], "-a");
+	send_commandf(dump_status, &flag_all, "status\n");
+	return 1;
+}
+
+
+static int
+command_start(int argc, char **args)
+{
+	send_commandv(dump_as_is, NULL, argc, args);
+	command_status(ARGCARGV_STATUS_NORMAL);
+	return 1;
+}
+
+
+static int
+command_stop(int argc, char **args)
+{
+	send_commandv(dump_as_is, NULL, argc, args);
+	command_status(ARGCARGV_STATUS_NORMAL);
+	return 1;
+}
+
+
+static int
+command_reload(int argc, char **args)
+{
+	(void) argc;
+	(void) args;
+	send_commandf(dump_as_is, NULL, "reload\n");
+	command_status(ARGCARGV_STATUS_FULL);
+	return 1;
+}
+
+
+/* ------------------------------------------------------------------------- */
+
+struct command_s {
+	const gchar *name;
+	int (*action) (int argc, char **args);
+};
+
+static struct command_s COMMANDS[] = {
+	{ "start",   command_start  },
+	{ "stop",    command_stop   },
+	{ "status",  command_status },
+	{ "reload",  command_reload },
+	{ NULL, NULL }
+};
 
 int
 main(int argc, char ** args)
 {
-	int i, rc = 1;
-	struct event_base *libevents_handle = NULL;
-
+	struct command_s *cmd;
+	
 	bzero(sock_path, sizeof(sock_path));
 	g_strlcpy(sock_path, GRIDINIT_SOCK_PATH, sizeof(sock_path)-1);
 	close(0);
-	log4c_init();
-	libevents_handle = event_init();
+
+	if (argc < 2) {
+		command_status(0, NULL);
+		return 0;
+	}
 	
-	/* Create input with the UNIX socket */
-	in_fd = __open_unix_client(sock_path);
-	if (-1 == in_fd) {
-		g_printerr("Connection to UNIX socket [%s] failed : %s\n", sock_path, strerror(errno));
-		return 1;
-	}
-
-	in_bevent = bufferevent_new(in_fd, __event_in, __event_out, __event_error, &in_fd);
-	bufferevent_settimeout(in_bevent, 30000, 30000);
-	/* send the commands then enable writing */
-	for (i=1; i<argc ;i++) {
-		bufferevent_write(in_bevent, args[i], strlen(args[i]));
-		bufferevent_write(in_bevent, " ", 1);
-	}
-	bufferevent_write(in_bevent, "\n", 1);
-	bufferevent_base_set(libevents_handle, in_bevent);
-	bufferevent_enable(in_bevent, EV_FLAG(EV_READ));
-	bufferevent_enable(in_bevent, EV_FLAG(EV_WRITE));
-
-	/* Wrap standard output, but do not monitor it yet (nothing to send) */
-	out_fd = 1;
-	out_bevent = bufferevent_new(out_fd, __event_in, __event_out, __event_error, &out_fd);
-	bufferevent_settimeout(out_bevent, 30000, 30000);
-	bufferevent_base_set(libevents_handle, out_bevent);
-	bufferevent_disable(out_bevent, EV_READ);
-	bufferevent_disable(out_bevent, EV_WRITE);
-
-	/* Wait for something to happen */
-	while (in_fd!=-1 && out_fd!=-1) {
-		if (0 > event_loop(EVLOOP_ONCE)) {
-			g_printerr("libevent error : %s\n", strerror(errno));
-			goto label_error;
+	for (cmd=COMMANDS; cmd->name ;cmd++) {
+		if (0 == g_ascii_strcasecmp(cmd->name, args[1])) {
+			int rc = cmd->action(argc-1, args+1);
+			close(1);
+			close(2);
+			return rc;
 		}
 	}
-	
-	/* Ensure both ends have been closed and disabled */
-	__close_bevent(&in_bevent, &in_fd);
-	__close_bevent(&out_bevent, &out_fd);
 
-	rc = 0;
-
-label_error:
-	event_base_free(libevents_handle);
-	return rc;
+	command_status(ARGCARGV_STATUS_NORMAL);	
+	close(1);
+	close(2);
+	return 1;
 }
 
