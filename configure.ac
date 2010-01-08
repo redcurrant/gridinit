@@ -32,11 +32,18 @@ esac
 case "$build" in
 x86_64*)
   LD_LIBDIR=lib64
+  #AC_CHECK_LIB([sysmm64], [spoolmess], [LSYSMM=-lsysmm64])
+  LSYSMM=-lsysmm64
   ;;
 *)
   LD_LIBDIR=lib
+  AC_CHECK_LIB([sysmm], [spoolmess], [LSYSMM=-lsysmm])
+  LSYSMM=-lsysmm
   ;;
 esac
+
+AM_CONDITIONAL([COND_SYSMM], [test -n "$LSYSMM"])
+AC_SUBST(LSYSMM)
 
 AC_ARG_WITH([ld-libdir],
   AS_HELP_STRING([--with-ld-libdir=DIR],
@@ -85,6 +92,7 @@ AC_CHECK_FUNCS([memset mkdir regcomp strchr strdup strerror])
 
 AC_CONFIG_FILES([Makefile
 		 lib/Makefile
+		 alert_spoolmess/Makefile
 		 main/Makefile])
 AC_OUTPUT
 

@@ -1,1 +1,1 @@
-SUBDIRS = lib main
+SUBDIRS = lib main alert_spoolmess
