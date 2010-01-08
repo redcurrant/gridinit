@@ -2,7 +2,6 @@
 # define __GRID_SUPERVISOR_INTERNALS_H__
 # include <glib.h>
 # include <log4c.h>
-# include <gridinit-utils.h>
 
 # define JOURNAL(Prio,Format,...) log4c_category_log(log4c_category_get(LOG_DOMAIN), \
 	Prio, "%u "Format, getpid(), ##__VA_ARGS__)

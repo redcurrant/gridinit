@@ -4,45 +4,66 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
-#include <unistd.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <unistd.h>
  
 #include <glib.h>
 
 #include "./gridinit-utils.h"
 
+#define MASK_OBSOLETE     0x01
+#define MASK_DISABLED     0x02
+#define MASK_RESPAWN      0x04
+#define MASK_STARTED      0x08
+
+#define FLAG_SET(sd,M) do { sd->flags |= (M); } while (0)
+#define FLAG_DEL(sd,M) do { sd->flags &= ~(M); } while (0)
+#define FLAG_HAS(sd,M) (sd->flags & (M))
+
 struct child_s {
+	struct child_s *next;
+	gchar *command;
+	pid_t pid;
+	uid_t uid;
+	gid_t gid;
+	guint8 flags;
 
 	gchar key[SUPERVISOR_LIMIT_CHILDKEYSIZE];
 
-	gboolean obsolete;
-	gboolean disabled;
-
+	/* Useful stats */
 	guint counter_started;
 	guint counter_died;
-
 	time_t last_start_attempt;
 	time_t last_kill_attempt;
 
-	pid_t pid;
-	gchar *command;
-
-	struct child_s *next;
+	/* Child's startup properties */
+	struct {
+		long core_size;
+		long stack_size;
+		long nb_files;
+	} rlimits;
 };
 
-static struct child_s SRV_BEACON = {
-	{0,0},
-	FALSE,
-	FALSE,
-	0U, 0U,
-	0L, 0L,
-	
-	-1,
-	NULL,
+static struct child_s SRV_BEACON = { NULL, NULL, -1 };
 
-	NULL
-};
+static void
+_child_get_info(struct child_s *c, struct child_info_s *ci)
+{
+	memset(ci, 0x00, sizeof(*ci));
+	ci->key = c->key;
+	ci->enabled = !FLAG_HAS(c,MASK_DISABLED);
+	ci->respawn = !FLAG_HAS(c,MASK_RESPAWN);
+	ci->cmd = c->command;
+	ci->pid = c->pid;
+	ci->uid = c->uid;
+	ci->gid = c->gid;
+	ci->counter_started = c->counter_started;
+	ci->counter_died = c->counter_died;
+	ci->last_start_attempt = c->last_start_attempt;
+	ci->last_kill_attempt = c->last_kill_attempt;
+	memcpy(&(ci->rlimits), &(c->rlimits), sizeof(c->rlimits));
+}
 
 static void
 sighandler_NOOP(int s)
@@ -86,7 +107,7 @@ _wait_for_dead_child(pid_t *ptr_pid)
  * conditions to start;<li>1 when the service has been forked successfuly.
  */
 static gint
-_child_start(struct child_s *sd)
+_child_start(struct child_s *sd, void *udata, supervisor_cb_f cb)
 {
 	typeof(errno) errsav;
 	gint argc;
@@ -118,15 +139,22 @@ _child_start(struct child_s *sd)
 
 	case 0: /*child*/
 		reset_sighandler();
+		sd->pid = getpid();
 		
-		sd->command = NULL;
-		
+		if (cb) {
+			struct child_info_s ci;
+			_child_get_info(sd, &ci);
+			cb(udata, &ci);
+		}
+
+		/*sd->command = NULL;*/
 		supervisor_children_cleanall();
 		execv(args[0], args);
 		exit(-1);
 		return 0;/*makes everybody happy*/
 
 	default: /*father*/
+		FLAG_SET(sd,MASK_STARTED);
 		sd->counter_started ++;
 		errsav = errno;
 		g_strfreev(args);
@@ -153,7 +181,7 @@ supervisor_children_killall(int sig)
 }
 
 guint
-supervisor_children_startall(void)
+supervisor_children_startall(void *udata, supervisor_cb_f cb)
 {
 	guint count, proc_count;
 	struct child_s *sd;
@@ -165,9 +193,11 @@ supervisor_children_startall(void)
 			if (1U == _wait_for_dead_child(&(sd->pid)))
 				sd->counter_died ++;
 		}
-		if (sd->pid <= 0 && !sd->disabled) {
+		if (sd->pid <= 0 && !FLAG_HAS(sd,MASK_DISABLED) &&
+			(!FLAG_HAS(sd,MASK_STARTED) || FLAG_HAS(sd,MASK_RESPAWN)))
+		{
 			GError *error_local = NULL;
-			if (0 == _child_start(sd))
+			if (0 == _child_start(sd, udata, cb))
 				count ++;
 			if (error_local)
 				g_error_free(error_local);
@@ -185,7 +215,7 @@ supervisor_children_mark_obsolete(void)
 
 	count = 0;
 	for (sd=SRV_BEACON.next; sd && sd!=&SRV_BEACON ;sd=sd->next) {
-		sd->obsolete = TRUE;
+		FLAG_SET(sd,MASK_OBSOLETE);
 		count ++;
 	}
 
@@ -203,7 +233,7 @@ supervisor_children_kill_obsolete(void)
 	count = 0U;
 
 	for (sd=SRV_BEACON.next; sd && sd!=&SRV_BEACON ;sd=sd->next) {
-		if (sd->pid>1 && sd->obsolete) {
+		if (sd->pid>1 && FLAG_HAS(sd,MASK_OBSOLETE)) {
 			register int allow_sigkill = now - sd->last_kill_attempt > SUPERVISOR_DEFAULT_TIMEOUT_KILL;
 			kill(sd->pid, (allow_sigkill ? SIGKILL : SIGTERM));
 			sd->last_kill_attempt = now;
@@ -215,7 +245,7 @@ supervisor_children_kill_obsolete(void)
 }
 
 guint
-supervisor_children_catharsis(void)
+supervisor_children_catharsis(void *udata, supervisor_cb_f cb)
 {
 	pid_t pid_dead;
 	guint count;
@@ -226,8 +256,13 @@ supervisor_children_catharsis(void)
 		for (sd=SRV_BEACON.next; sd && sd!=&SRV_BEACON ;sd=sd->next) {
 			if (sd->pid == pid_dead) {
 				count++;
-				sd->pid = -1;
 				sd->counter_died ++;
+				if (cb) {
+					struct child_info_s ci;
+					_child_get_info(sd, &ci);
+					cb(udata, &ci);
+				}
+				sd->pid = -1;
 				break;
 			}
 		}
@@ -285,24 +320,32 @@ supervisor_children_fini(void)
 gboolean
 supervisor_children_register(const gchar *key, const gchar *cmd, GError **error)
 {
-	static struct child_s CHILD_INIT = {{0,0}, FALSE,FALSE, 0U,0U, 0L,0L, -1, NULL,NULL};
 	struct child_s *sd;
 
 	/*check if the service is present*/
 	for (sd=SRV_BEACON.next; sd && sd!=&SRV_BEACON ;sd=sd->next) {
 		if (0 == g_ascii_strcasecmp(sd->key, key)) {
-			sd->obsolete = FALSE;
+			FLAG_DEL(sd,MASK_OBSOLETE);
 			return TRUE;
 		}
 	}
 
 	/*Child not found, it will be created*/
-	if (NULL == (sd = g_memdup(&CHILD_INIT, sizeof(struct child_s)))) {
+	sd = g_try_malloc0(sizeof(struct child_s));
+	if (NULL == sd) {
 		errno = ENOMEM;
 		return FALSE;
 	}
+
 	g_strlcpy(sd->key, key, sizeof(sd->key)-1);
+	sd->flags = MASK_RESPAWN;
 	sd->command = g_strdup(cmd);
+	sd->pid = -1;
+	sd->uid = getuid();
+	sd->gid = getgid();
+	sd->rlimits.core_size = -1;
+	sd->rlimits.stack_size = 8192;
+	sd->rlimits.nb_files = 32768;
 	
 	/*ring insertion*/
 	sd->next = SRV_BEACON.next;
@@ -324,15 +367,7 @@ supervisor_run_services(void *udata, supervisor_cb_f callback)
 
 	/*check if the service is present*/
 	for (sd=SRV_BEACON.next; sd && sd!=&SRV_BEACON ;sd=sd->next) {
-		memset(&ci, 0x00, sizeof(ci));
-		ci.key = sd->key;
-		ci.enabled = (sd->disabled ? FALSE : TRUE);
-		ci.cmd = sd->command;
-		ci.pid = sd->pid;
-		ci.counter_started = sd->counter_started;
-		ci.counter_died = sd->counter_died;
-		ci.last_start_attempt = sd->last_start_attempt;
-		ci.last_kill_attempt = sd->last_kill_attempt;
+		_child_get_info(sd, &ci);
 		callback(udata, &ci);
 	}
 
@@ -350,7 +385,7 @@ supervisor_children_kill_disabled(void)
 	count = 0U;
 
 	for (sd=SRV_BEACON.next; sd && sd!=&SRV_BEACON ;sd=sd->next) {
-		if (sd->pid>1 && sd->disabled) {
+		if (sd->pid>1 && FLAG_HAS(sd,MASK_DISABLED)) {
 			register int allow_sigkill = now - sd->last_kill_attempt > SUPERVISOR_DEFAULT_TIMEOUT_KILL;
 			kill(sd->pid, (allow_sigkill ? SIGKILL : SIGTERM));
 			sd->last_kill_attempt = now;
@@ -364,7 +399,6 @@ supervisor_children_kill_disabled(void)
 int
 supervisor_children_enable(const char *key, gboolean enable)
 {
-	gboolean value;
 	struct child_s *sd;
 
 	if (!key) {
@@ -375,15 +409,54 @@ supervisor_children_enable(const char *key, gboolean enable)
 	for (sd=SRV_BEACON.next; sd && sd!=&SRV_BEACON ;sd=sd->next) {
 		if (0 == g_ascii_strcasecmp(sd->key, key)) {
 			errno = 0;
-			value = (enable ? 0 : 1);
-			if (sd->disabled == value)
-				return 0;
-			sd->disabled = value;
-			return 1;
+			if (!enable) {
+				if (FLAG_HAS(sd,MASK_DISABLED))
+					return 0;
+				FLAG_SET(sd,MASK_DISABLED); 
+				return 1;
+			}
+			else {
+				if (!FLAG_HAS(sd,MASK_DISABLED))
+					return 0;
+				FLAG_DEL(sd,MASK_DISABLED); 
+				return 1;
+			}
 		}
 	}
 	
-	errno = EAGAIN;
+	errno = ENOENT;
+	return -1;
+}
+
+int
+supervisor_children_set_respawn(const char *key, gboolean enabled)
+{
+	struct child_s *sd;
+
+	if (!key) {
+		errno = EINVAL;
+		return -1;
+	}
+	
+	for (sd=SRV_BEACON.next; sd && sd!=&SRV_BEACON ;sd=sd->next) {
+		if (0 == g_ascii_strcasecmp(sd->key, key)) {
+			errno = 0;
+			if (enabled) {
+				if (FLAG_HAS(sd,MASK_RESPAWN))
+					return 0;
+				FLAG_SET(sd,MASK_RESPAWN);
+				return 1;
+			}
+			else {
+				if (!FLAG_HAS(sd,MASK_RESPAWN))
+					return 0;
+				FLAG_DEL(sd,MASK_RESPAWN);
+				return 1;
+			}
+		}
+	}
+	
+	errno = ENOENT;
 	return -1;
 }
 

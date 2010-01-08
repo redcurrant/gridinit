@@ -10,19 +10,43 @@
 # include <sys/types.h>
 # include <unistd.h>
 
+/* Children monitoring ----------------------------------------------------- */
+
+struct child_info_s {
+	const char *key;
+	const char *cmd;
+	gint pid;
+	guint uid;
+	guint gid;
+	gboolean enabled;
+	gboolean respawn;
+	time_t last_start_attempt;
+	time_t last_kill_attempt;
+	guint counter_started;
+	guint counter_died;
+	struct {
+		long core_size;
+		long stack_size;
+		long nb_files;
+	} rlimits;
+};
+
+typedef void (supervisor_cb_f) (void *udata, struct child_info_s *ci);
+
+
 void supervisor_children_init(void);
 
 void supervisor_children_fini(void);
 
 guint supervisor_children_cleanall(void);
 
-guint supervisor_children_startall(void);
+guint supervisor_children_startall(void *udata, supervisor_cb_f cb);
 
 void supervisor_children_stopall(guint max_retries);
 
 guint supervisor_children_killall(int sig);
 
-guint supervisor_children_catharsis(void);
+guint supervisor_children_catharsis(void *udata, supervisor_cb_f cb);
 
 gboolean supervisor_children_register(const gchar *key, const gchar *cmd, GError **error);
 
@@ -34,18 +58,7 @@ guint supervisor_children_kill_disabled(void);
 
 int supervisor_children_enable(const char *key, gboolean enable);
 
-struct child_info_s {
-	const char *key;
-	const char *cmd;
-	pid_t pid;
-	gboolean enabled;
-	time_t last_start_attempt;
-	time_t last_kill_attempt;
-	guint counter_started;
-	guint counter_died;
-};
-
-typedef void (supervisor_cb_f) (void *udata, struct child_info_s *ci);
+int supervisor_children_set_respawn(const char *key, gboolean enabled);
 
 gboolean supervisor_run_services(void *ptr, supervisor_cb_f callback);
 
