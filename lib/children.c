@@ -172,8 +172,8 @@ supervisor_children_killall(int sig)
 	count = 0;
 	for (sd=SRV_BEACON.next; sd && sd!=&SRV_BEACON ;sd=sd->next) {
 		if (sd->pid > 0) {
-			kill(sd->pid, sig);
-			count ++;
+			if (0 == kill(sd->pid, sig))
+				count ++;
 		}
 	}
 
