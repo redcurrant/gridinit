@@ -22,6 +22,8 @@
 #include <sys/un.h>
 #include <unistd.h>
 
+#include <glob.h>
+
 #include <log4c.h>
 #include <event.h>
 #include <glib.h>
@@ -53,7 +55,8 @@ static GList *list_of_signals = NULL; /* list of libevent events */
 
 static char sock_path[1024];
 static char pidfile_path[1024];
-static char *config_path;
+static char *config_path = NULL;
+static char *config_subdir = NULL;
 
 static volatile int flag_quiet = 0;
 static volatile int flag_daemon = 0;
@@ -988,10 +991,10 @@ static gboolean
 _cfg_section_default(GKeyFile *kf, const gchar *section, GError **err)
 {
 	GError *error_local = NULL;
-	gchar buf_user[256], buf_group[256];
+	gchar buf_user[256]="", buf_group[256]="", buf_includes[1024]="";
 	long limit_thread_stack = 1024;
 	long limit_core_size = -1;
-	long limit_nb_files = 32768;
+	long limit_nb_files = 8192;
 	gchar **p_key, **keys;
 
 	keys = g_key_file_get_keys(kf, section, NULL, err);
@@ -1035,6 +1038,10 @@ _cfg_section_default(GKeyFile *kf, const gchar *section, GError **err)
 			bzero(buf_group, sizeof(buf_group));
 			g_strlcpy(buf_group, str, sizeof(buf_group)-1);
 		}
+		else if (!g_ascii_strcasecmp(*p_key, CFG_KEY_INCLUDES)) {
+			bzero(buf_includes, sizeof(buf_includes));
+			g_strlcpy(buf_includes, str, sizeof(buf_includes)-1);
+		}
 
 		g_free(str);
 	}
@@ -1049,29 +1056,26 @@ _cfg_section_default(GKeyFile *kf, const gchar *section, GError **err)
 	(void) supervisor_limit_set(SUPERV_LIMIT_MAX_FILES, limit_nb_files);
 	(void) supervisor_limit_set(SUPERV_LIMIT_THREAD_STACK, limit_thread_stack * 1024);
 
+	if (*buf_includes) {
+		g_free(config_subdir);
+		config_subdir = g_strndup(buf_includes, sizeof(buf_includes));
+	}
+
 	return TRUE;
 }
 
 static gboolean
-_cfg_reload(gboolean services_only, GError **err)
+_cfg_reload_file(GKeyFile *kf, gboolean services_only, GError **err)
 {
-	gboolean rc = FALSE;
 	gchar **groups=NULL, **p_group=NULL;
-	GKeyFile *kf = NULL;
-	
-	kf = g_key_file_new();
 
-	if (!g_key_file_load_from_file(kf, config_path, 0, err)) {
-		g_key_file_free(kf);
-		return FALSE;
-	}
-		
 	groups = g_key_file_get_groups(kf, NULL);
+
 	if (!groups) {
-		g_key_file_free(kf);
+		*err = g_error_new(g_quark_from_static_string("gridinit"), EINVAL, "no group");
 		return FALSE;
 	}
-	
+
 	for (p_group=groups; *p_group ;p_group++) {
 		if (g_str_has_prefix(*p_group, "service.")) {
 			INFO("reconfigure : managing service section [%s]", *p_group);
@@ -1093,11 +1097,64 @@ _cfg_reload(gboolean services_only, GError **err)
 		}
 	}
 
+label_exit:
+	g_strfreev(groups);
+	return TRUE;
+}
+
+static gboolean
+_cfg_reload(gboolean services_only, GError **err)
+{
+	gboolean rc = FALSE;
+	GKeyFile *kf = NULL;
+	
+	kf = g_key_file_new();
+
+	if (!g_key_file_load_from_file(kf, config_path, 0, err)) {
+		goto label_exit;
+	}
+	if (!_cfg_reload_file(kf, services_only, err)) {
+		goto label_exit;
+	}
+
+	if (config_subdir) {
+		int notify_error(const char *path, int en) {
+			NOTICE("errno=%d %s : %s", en, path, strerror(en));
+			return 0;
+		}
+		glob_t subfiles_glob;
+
+		DEBUG("Loading services files matching [%s]", config_subdir);
+		if (0 > glob(config_subdir, 0, notify_error, &subfiles_glob))
+			ERROR("reconfigure : globbing errno=%d : %s", errno, strerror(errno));
+		else {
+			char **p_str;
+
+			for (p_str=subfiles_glob.gl_pathv; *p_str ;p_str++) {
+				GError *gerr_local = NULL;
+				GKeyFile *sub_kf = NULL;
+
+				sub_kf = g_key_file_new();
+				if (!g_key_file_load_from_file(sub_kf, *p_str, 0, &gerr_local))
+					ERROR("Configuration file [%s] not parsed : %s", *p_str, gerr_local->message);
+				else if (!_cfg_reload_file(sub_kf, TRUE, &gerr_local))
+					ERROR("Configuration file [%s] not loaded : %s", *p_str, gerr_local->message);
+				else
+					INFO("Loaded service file [%s]", *p_str);
+
+				if (gerr_local)
+					g_clear_error(&gerr_local);
+				g_key_file_free(sub_kf);
+			}
+			globfree(&subfiles_glob);
+		}
+	}
+
 	rc = TRUE;
 	
 label_exit:
-	g_strfreev(groups);
-	g_key_file_free(kf);
+	if (kf)
+		g_key_file_free(kf);
 	return rc;	
 }
 
@@ -1178,6 +1235,7 @@ write_pid_file(void)
 int
 main(int argc, char ** args)
 {
+	int rc = 1;
 	struct event_base *libevents_handle = NULL;
 
 	bzero(sock_path, sizeof(sock_path));
@@ -1196,8 +1254,11 @@ main(int argc, char ** args)
 		write_pid_file();
 	}
 	
-	if (-1 == servers_save_unix(sock_path))
-		abort();
+	if (-1 == servers_save_unix(sock_path)) {
+		ERROR("Failed to open the UNIX socket for commands : %s",
+			strerror(errno));
+		goto label_exit;
+	}
 	
 	/* Starts the network and the signal management */
 	DEBUG("Initiating the network and signals management");
@@ -1211,7 +1272,7 @@ main(int argc, char ** args)
 	signals_manage(SIGCHLD);
 	if (!servers_monitor_all()) {
 		ERROR("Failed to monitor the server sockets");
-		exit(1);
+		goto label_exit;
 	}
 	
 	DEBUG("Starting the event loop!");
@@ -1251,6 +1312,9 @@ main(int argc, char ** args)
 		}
 	} while (0);
 
+	rc = 0;
+
+label_exit:
 	/* stop all the processes */
 	DEBUG("Stopping all the children");
 	(void) supervisor_children_stopall(4);
@@ -1258,13 +1322,15 @@ main(int argc, char ** args)
 
 	/* clean the working structures */
 	DEBUG("Cleaning the working structures");
-	event_base_free(libevents_handle);
+	if (libevents_handle)
+		event_base_free(libevents_handle);
 	supervisor_children_cleanall();
 	servers_clean();
 	signals_clean();
 	g_free(config_path);
-	gridinit_alerting_close();
 
-	return 0;
+	gridinit_alerting_close();
+	log4c_fini();
+	return rc;
 }
 

@@ -33,6 +33,10 @@
 # define CFG_KEY_USER "user"
 #endif
 
+#ifndef  CFG_KEY_INCLUDES
+# define CFG_KEY_INCLUDES "include"
+#endif
+
 int __open_unix_server(const char *path);
 
 int __open_unix_client(const char *path);
