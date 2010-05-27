@@ -1119,27 +1119,34 @@ _cfg_reload(gboolean services_only, GError **err)
 	}
 
 	if (config_subdir) {
+#if 0
 		int notify_error(const char *path, int en) {
 			NOTICE("errno=%d %s : %s", en, path, strerror(en));
 			return 0;
 		}
+#endif
 		glob_t subfiles_glob;
 
 		DEBUG("Loading services files matching [%s]", config_subdir);
-		if (0 > glob(config_subdir, 0, notify_error, &subfiles_glob))
-			ERROR("reconfigure : globbing errno=%d : %s", errno, strerror(errno));
+		if (0 > glob(config_subdir, 0, NULL, &subfiles_glob))
+			ERROR("reconfigure : glob error : %s", strerror(errno));
 		else {
 			char **p_str;
 
+			DEBUG("reconfigure : glob done!");
 			for (p_str=subfiles_glob.gl_pathv; *p_str ;p_str++) {
 				GError *gerr_local = NULL;
 				GKeyFile *sub_kf = NULL;
 
+				TRACE("Loading a new file");
+
 				sub_kf = g_key_file_new();
 				if (!g_key_file_load_from_file(sub_kf, *p_str, 0, &gerr_local))
-					ERROR("Configuration file [%s] not parsed : %s", *p_str, gerr_local->message);
+					ERROR("Configuration file [%s] not parsed : %s", *p_str,
+						gerr_local ? gerr_local->message : "");
 				else if (!_cfg_reload_file(sub_kf, TRUE, &gerr_local))
-					ERROR("Configuration file [%s] not loaded : %s", *p_str, gerr_local->message);
+					ERROR("Configuration file [%s] not loaded : %s", *p_str,
+						gerr_local ? gerr_local->message : "");
 				else
 					INFO("Loaded service file [%s]", *p_str);
 
@@ -1152,6 +1159,7 @@ _cfg_reload(gboolean services_only, GError **err)
 	}
 
 	rc = TRUE;
+	INFO("Configuration laoded from [%s]", config_path);
 	
 label_exit:
 	if (kf)
