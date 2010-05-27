@@ -145,10 +145,14 @@ dump_status(FILE *in_stream, void *udata)
 	all_jobs = read_services_list(in_stream);
 
 	maxlen = get_longest_key(all_jobs);
-	g_snprintf(fmt_title, sizeof(fmt_title), "#%%%us %%6s %%5s %%6s %%5s %%19s %%s\n", maxlen-1);
-	g_snprintf(fmt_line, sizeof(fmt_line),    "%%%us %%6s %%5d %%6d %%5d %%19s %%s\n", maxlen);
-	g_snprintf(fmt_title_full, sizeof(fmt_title_full), "#%%%us %%6s %%5s %%6s %%5s %%5s %%5s %%5s %%19s %%s\n", maxlen-1);
-	g_snprintf(fmt_line_full, sizeof(fmt_line_full),    "%%%us %%6s %%5d %%6d %%5d %%5ld %%5ld %%5ld %%19s %%s\n", maxlen);
+	g_snprintf(fmt_title, sizeof(fmt_title), "#%%%us %%6s %%5s %%6s %%5s %%19s %%s\n",
+			(guint)(maxlen-1));
+	g_snprintf(fmt_line, sizeof(fmt_line),    "%%%us %%6s %%5d %%6d %%5d %%19s %%s\n",
+			(guint)maxlen);
+	g_snprintf(fmt_title_full, sizeof(fmt_title_full), "#%%%us %%6s %%5s %%6s %%5s %%5s %%5s %%5s %%19s %%s\n",
+			(guint) maxlen-1);
+	g_snprintf(fmt_line_full, sizeof(fmt_line_full),    "%%%us %%6s %%5d %%6d %%5d %%5ld %%5ld %%5ld %%19s %%s\n",
+			(guint) maxlen);
 
 	/* Dump the list */
 	if (flag_full)
