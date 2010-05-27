@@ -705,6 +705,7 @@ servers_monitor_none(void)
 	}
 
 	errno = 0;
+	return TRUE;
 }
 
 static int
