@@ -991,7 +991,6 @@ _cfg_section_alert(GKeyFile *kf, const gchar *section, GError **err)
 static gboolean
 _cfg_section_default(GKeyFile *kf, const gchar *section, GError **err)
 {
-	GError *error_local = NULL;
 	gchar buf_user[256]="", buf_group[256]="", buf_includes[1024]="";
 	long limit_thread_stack = 1024;
 	long limit_core_size = -1;
@@ -1048,10 +1047,14 @@ _cfg_section_default(GKeyFile *kf, const gchar *section, GError **err)
 	}
 	g_strfreev(keys);
 
+#if 0
+	GError *error_local = NULL;
 	if (!supervisor_rights_init(buf_user, buf_group, &error_local)) {
 		g_printerr("Failed to set privileges : %s\n", error_local->message);
-		g_clear_error(&error_local);
 	}
+	if (error_local)
+		g_clear_error(&error_local);
+#endif
 
 	(void) supervisor_limit_set(SUPERV_LIMIT_CORE_SIZE, limit_core_size * 1024 * 1024);
 	(void) supervisor_limit_set(SUPERV_LIMIT_MAX_FILES, limit_nb_files);
@@ -1262,7 +1265,9 @@ main(int argc, char ** args)
 	log4c_init();
 	supervisor_children_init();
 	__parse_options(argc, args);
+#if 0
 	(void) supervisor_rights_lose();
+#endif
 
 	close(0);/* We will never read the standard input */
 	if (flag_daemon) {
