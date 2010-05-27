@@ -540,7 +540,7 @@ __event_accept(int fd, short flags, void *udata)
 		WARN("fd=%i Cannot trigger the tcp keepalive behaviour (%s)", fd_client, strerror(errno));
 
 	/* TCP-specific options */
-	int opt_len = sizeof(i_opt);
+	socklen_t opt_len = sizeof(i_opt);
 	i_rc = getsockopt(fd_client, SOL_SOCKET, SO_TYPE, (void*)&i_opt, &opt_len);
 	if (i_rc == -1)
 		WARN("fd=%i Cannot check the socket type (%s)", fd_client, strerror(errno));
