@@ -1125,16 +1125,25 @@ _cfg_reload(gboolean services_only, GError **err)
 			return 0;
 		}
 #endif
+		int glob_rc;
 		glob_t subfiles_glob;
 
+		bzero(&subfiles_glob, sizeof(subfiles_glob));
+
 		DEBUG("Loading services files matching [%s]", config_subdir);
-		if (0 > glob(config_subdir, 0, NULL, &subfiles_glob))
-			ERROR("reconfigure : glob error : %s", strerror(errno));
+
+		glob_rc = glob(config_subdir, GLOB_NOSORT|GLOB_MARK, NULL, &subfiles_glob);
+		if (glob_rc != 0) {
+			if (glob_rc == GLOB_NOMATCH)
+				NOTICE("Service file pattern matched no file!");
+			else
+				ERROR("reconfigure : glob error : %s", strerror(errno));
+		}
 		else {
 			char **p_str;
 
-			DEBUG("reconfigure : glob done!");
-			for (p_str=subfiles_glob.gl_pathv; *p_str ;p_str++) {
+			DEBUG("reconfigure : glob done, %"G_GSIZE_FORMAT" elements found", subfiles_glob.gl_pathc);
+			for (p_str=subfiles_glob.gl_pathv; p_str && *p_str ;p_str++) {
 				GError *gerr_local = NULL;
 				GKeyFile *sub_kf = NULL;
 
