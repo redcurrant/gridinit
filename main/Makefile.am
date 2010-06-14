@@ -1,5 +1,5 @@
 noinst_PROGRAMS = 
-bin_PROGRAMS = gridinit gridinit_cmd
+bin_PROGRAMS = gridinit gridinit_cmd gridinit_testcmd
 
 CFLAGS= -g -O2 -std=gnu99 -D_REENTRANT
 CFLAGS+= -Wall -Wextra -Werror
@@ -14,4 +14,7 @@ gridinit_LDADD = -llog4c -levent $(GLIB_LIBS) ../lib/libgridinit-utils.la
 
 gridinit_cmd_SOURCES = gridinit_cmd.c cnx.c gridinit_internals.h
 gridinit_cmd_LDADD = -llog4c $(GLIB_LIBS)
+
+gridinit_testcmd_SOURCES = test_cmd.c
+gridinit_testcmd_LDADD = -llog4c $(GLIB_LIBS) ../lib/libgridinit-utils.la
 

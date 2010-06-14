@@ -13,6 +13,10 @@
 # define CFG_KEY_PATH_PIDFILE "pidfile"
 #endif
 
+#ifndef  CFG_KEY_PATH_WORKINGDIR
+# define CFG_KEY_PATH_WORKINGDIR "working_dir"
+#endif
+
 #ifndef  CFG_KEY_LIMIT_STACKSIZE
 # define CFG_KEY_LIMIT_STACKSIZE "limit.stack_size"
 #endif

@@ -2,7 +2,7 @@
 # include "../config.h"
 #endif
 #ifndef LOG_DOMAIN
-# define LOG_DOMAIN "gridinit"
+# define LOG_DOMAIN "gridinit.main"
 #endif
 
 #include <stdlib.h>
@@ -41,6 +41,8 @@
 # define XTRACE(FMT,...)
 #endif
 
+#define BOOL(i) (i?1:0)
+
 struct server_sock_s {
 	int family;
 	int fd;
@@ -53,8 +55,9 @@ struct server_sock_s {
 static GList *list_of_servers = NULL;
 static GList *list_of_signals = NULL; /* list of libevent events */
 
-static char sock_path[1024];
-static char pidfile_path[1024];
+static char sock_path[1024] = "";
+static char pidfile_path[1024] = "";
+static char default_working_directory[1024] = "";
 static char *config_path = NULL;
 static char *config_subdir = NULL;
 
@@ -69,29 +72,11 @@ static gboolean _cfg_reload(gboolean services_only, GError **err);
 
 static void servers_ensure(void);
 
+
+#define USERFLAG_ONDIE_EXIT                                          0x00000001
+
+
 /* Process management helpers ---------------------------------------------- */
-
-static guint
-__alert_processes_not_respawned(void)
-{
-	guint count;
-	void run_service(void *udata, struct child_info_s *ci) {
-		gchar buff[1024];
-
-		(void) udata;
-		if (ci->enabled && ci->respawn && ci->pid < 0) {
-			g_snprintf(buff, sizeof(buff),
-				"Process not respawned [%s] %s",
-				ci->key, ci->cmd);
-			gridinit_alerting_send(GRIDINIT_EVENT_NOTRESPAWNED, buff);
-			count ++;
-		}
-	}
-
-	count = 0;
-	supervisor_run_services(NULL, run_service);
-	return count;
-}
 
 static void
 alert_proc_died(void *udata, struct child_info_s *ci)
@@ -99,9 +84,24 @@ alert_proc_died(void *udata, struct child_info_s *ci)
 	gchar buff[1024];
 
 	(void) udata;
-	g_snprintf(buff, sizeof(buff), "Process died pid=%d [%s] %s",
-		ci->pid, ci->key, ci->cmd);
-	gridinit_alerting_send(GRIDINIT_EVENT_DIED, buff);
+
+	/* if the user_flags on the process contain the on_die:exit flag,
+	 * then we mark the gridinit to stop */
+	if (ci->user_flags & USERFLAG_ONDIE_EXIT) {
+		supervisor_children_enable(ci->key, FALSE);
+		flag_running = FALSE;
+	}
+
+	if (ci->broken) {
+		g_snprintf(buff, sizeof(buff), "Process broken pid=%d [%s] %s",
+			ci->pid, ci->key, ci->cmd);
+		gridinit_alerting_send(GRIDINIT_EVENT_BROKEN, buff);
+	}
+	else {
+		g_snprintf(buff, sizeof(buff), "Process died pid=%d [%s] %s",
+			ci->pid, ci->key, ci->cmd);
+		gridinit_alerting_send(GRIDINIT_EVENT_DIED, buff);
+	}
 }
 
 static void
@@ -146,39 +146,70 @@ command_check(struct bufferevent *bevent, int argc, char **argv)
 }
 
 static int
-command_start(struct bufferevent *bevent, int argc, char **argv)
+command_start(struct bufferevent *bevent, int argc, char **args)
 {
 	guint count_ok = 0, count_ko = 0;
-	int i;
 
-	if (argc<2) {
-		__reply_sprintf(bevent, "error: missing argument\n");
-		__reply_sprintf(bevent, "Usage: %s KEY [KEY...]\n", argv[0]);
-		__reply_sprintf(bevent, "result: ok=%u ko=%u\n", count_ok, count_ko);
-		return 0;
-	}
-
-	for (i=1; i<argc ;i++) {
-		int rc = supervisor_children_enable(argv[i], TRUE);
-		switch (rc) {
+	void start_process(const char *proc_name) {
+		DEBUG("start: Starting [%s]", proc_name);
+		switch (supervisor_children_enable(proc_name, TRUE)) {
 		case -1:
 			count_ko++;
-			__reply_sprintf(bevent, "notfound: %s\n", argv[i]);
-			break;
+			__reply_sprintf(bevent, "notfound: %s\n", proc_name);
+			return;
 		case 0:
 			count_ok++;
-			__reply_sprintf(bevent, "already: %s\n", argv[i]);
-			break;
+			if (0 < supervisor_children_repair(proc_name))
+				__reply_sprintf(bevent, "repaired: %s\n", proc_name);
+			else
+				__reply_sprintf(bevent, "already: %s\n", proc_name);
+			return;
 		case 1:
 			count_ok++;
-			__reply_sprintf(bevent, "enabled: %s\n", argv[i]);
-			break;
+			if (0 < supervisor_children_repair(proc_name))
+				__reply_sprintf(bevent, "repaired: %s\n", proc_name);
+			else
+				__reply_sprintf(bevent, "enabled: %s\n", proc_name);
+			return;
+		default:
+			count_ko++;
+			__reply_sprintf(bevent, "internal error: %s\n", proc_name);
+			return;
+		}
+	}
+
+	void child_starter(void *udata, struct child_info_s *ci) {
+		char *group = udata;
+
+		if (group && *group && g_ascii_strcasecmp(ci->group, group)) {
+			DEBUG("start: Skipping [%s] with group [%s]", ci->key, ci->group);
+			return;
+		}
+		start_process(ci->key);
+	}
+
+	if (argc <= 1) {
+		supervisor_run_services(NULL, child_starter);
+	}
+	else {
+		int i;
+		for (i=1; i<argc ;i++) {
+			char *what = args[i];
+			if (*what == '@') {
+				DEBUG("start: only group [%s]", what);
+				supervisor_run_services(what+1, child_starter);
+			}
+			else {
+				DEBUG("start: only service [%s]", what);
+				start_process(what);
+			}
 		}
 	}
 	
 	if (count_ok) {
 		if (count_ko)
-			__reply_sprintf(bevent, "No process started, there were %u errors\n", count_ko);
+			__reply_sprintf(bevent, "No process started, there were %u errors\n",
+					count_ko);
 		else {
 			guint count = supervisor_children_startall(NULL, alert_proc_started);
 			__reply_sprintf(bevent, "Started %u processes\n", count);
@@ -191,39 +222,57 @@ command_start(struct bufferevent *bevent, int argc, char **argv)
 }
 
 static int 
-command_stop(struct bufferevent *bevent, int argc, char **argv)
+command_stop(struct bufferevent *bevent, int argc, char **args)
 {
 	guint count_ok = 0, count_ko = 0;
-	int i, rc;
 
-	if (argc<2) {
-		REPLY_STR_CONTANT(bevent, "Error: missing argument\n");
-		__reply_sprintf(bevent, "Usage: %s KEY [KEY...]\n", argv[0]);
-		__reply_sprintf(bevent, "result: ok=%u ko=%u\n", count_ok, count_ko);
-		return 0;
+	void stop_process(const char *proc_name) {
+		switch (supervisor_children_enable(proc_name, FALSE)) {
+		case -1:
+			count_ko++;
+			__reply_sprintf(bevent, "notfound: %s\n", proc_name);
+			return;
+		case 0:
+			count_ok++;
+			__reply_sprintf(bevent, "already: %s\n", proc_name);
+			return;
+		case 1:
+			count_ok++;
+			__reply_sprintf(bevent, "disabled: %s\n", proc_name);
+			return;
+		default:
+			count_ko++;
+			__reply_sprintf(bevent, "internal error: %s\n", proc_name);
+			return;
+		}
 	}
 
-	for (i=1; i<argc ;i++) {
-		rc = supervisor_children_enable(argv[i], FALSE);
-		switch (rc) {
-		case -1:
-			count_ko ++;
-			__reply_sprintf(bevent, "notfound: %s\n", argv[i]);
-			break;
-		case 0:
-			count_ok ++;
-			__reply_sprintf(bevent, "already: %s\n", argv[i]);
-			break;
-		case 1:
-			count_ok ++;
-			__reply_sprintf(bevent, "stopped: %s\n", argv[i]);
-			break;
+	void child_stopper(void *udata, struct child_info_s *ci) {
+		char *group = udata;
+
+		if (group && *group && g_ascii_strcasecmp(ci->group, group))
+			return;
+		stop_process(ci->key);
+	}
+
+	if (argc <= 1) {
+		supervisor_run_services(NULL, child_stopper);
+	}
+	else {
+		int i;
+		for (i=1; i<argc ;i++) {
+			char *what = args[i];
+			if (*what == '@')
+				supervisor_run_services(what, child_stopper);
+			else
+				stop_process(what);
 		}
 	}
 
 	if (count_ok) {
 		if (count_ko)
-			__reply_sprintf(bevent, "No process killed, there were %u errors\n", count_ko);
+			__reply_sprintf(bevent, "No process killed, there were %u errors\n",
+					count_ko);
 		else {
 			guint count = supervisor_children_kill_disabled();
 			__reply_sprintf(bevent, "killed %u processes\n", count);
@@ -236,27 +285,82 @@ command_stop(struct bufferevent *bevent, int argc, char **argv)
 }
 
 static int
-command_show(struct bufferevent *bevent, int argc, char **argv)
+command_show(struct bufferevent *bevent, int argc, char **args)
 {
+	/* Callback used when running all the services or the services
+	 * matching specific groups */
 	void run_service(void *udata, struct child_info_s *ci) {
 		gsize buff_size;
 		gchar buff[2048];
+		gchar *group = udata;
 		
-		(void) udata;
-		buff_size = g_snprintf(buff, sizeof(buff), "%d %d %u %u %ld %ld %ld %ld %u %u %s %s\n",
-			ci->pid, ci->enabled,
+		/* if a group is set, skip the service if it doesn't match the group*/
+		if (group && *group && g_ascii_strcasecmp(group, ci->group))
+			return;
+
+		buff_size = g_snprintf(buff, sizeof(buff),
+				"%d "
+				"%d %d %d "
+				"%u %u "
+				"%ld "
+				"%ld %ld %ld "
+				"%u %u "
+				"%s %s %s\n",
+			ci->pid,
+			BOOL(ci->enabled), BOOL(ci->broken), BOOL(ci->respawn),
 			ci->counter_started, ci->counter_died,
-			ci->last_start_attempt, ci->rlimits.core_size, ci->rlimits.stack_size, ci->rlimits.nb_files,
+			ci->last_start_attempt,
+			ci->rlimits.core_size, ci->rlimits.stack_size, ci->rlimits.nb_files,
 			ci->uid, ci->gid,
-			ci->key, ci->cmd);
+			ci->key, ci->group, ci->cmd);
+
 		TRACE("status line [%.*s]", buff_size-1, buff);
 		bufferevent_write(bevent, buff, buff_size);
 	}
 
+	int i;
+
+	if (argc <= 1) {
+		supervisor_run_services(NULL, run_service);
+		return 0;
+	}
+
+	for (i=1; i<argc ;i++) {
+		char *what = args[i];
+
+		if (*what == '@') /* Run the services for the group */
+			supervisor_run_services(what+1, run_service);
+		else { /* Specific service asked */
+			int rc;
+			struct child_info_s ci;
+
+			bzero(&ci, sizeof(ci));
+			rc = supervisor_children_get_info(what, &ci);
+			if (rc == 0)
+				run_service(NULL, &ci);
+			else {
+				if (errno == ENOENT)
+					REPLY_STR_CONTANT(bevent, "Service not found\n");
+				else
+					REPLY_STR_CONTANT(bevent, "gridinit internal error\n");
+			}
+		}
+	}
+	REPLY_STR_CONTANT(bevent, "\n");
+	return 0;
+}
+
+static int
+command_repair(struct bufferevent *bevent, int argc, char **argv)
+{
+	int count;
+
 	(void) argc;
 	(void) argv;
-	supervisor_run_services(NULL, run_service);
-	REPLY_STR_CONTANT(bevent, "\n");
+
+	count = supervisor_children_repair_all();
+	__reply_sprintf(bevent, "Repaired %d processes!\n\n", count);
+
 	return 0;
 }
 
@@ -312,9 +416,10 @@ command_help(struct bufferevent *bevent, int argc, char **argv)
 	REPLY_STR_CONTANT(bevent, "Commands:\n");
 	REPLY_STR_CONTANT(bevent, "\t start ID [ID]...  : starts the process with the given ID\n");
 	REPLY_STR_CONTANT(bevent, "\t stop ID [ID]...   : stops the process with the given ID\n");
-	REPLY_STR_CONTANT(bevent, "\t(show|status|stat) : stops the process with the given ID\n");
+	REPLY_STR_CONTANT(bevent, "\t status [ID]...    : stops the process with the given ID\n");
 	REPLY_STR_CONTANT(bevent, "\t reload            : reloads the configuration and restores a UNIX socket if necessary\n");
-	REPLY_STR_CONTANT(bevent, "\t(help|usage)       : displays this help section\n");
+	REPLY_STR_CONTANT(bevent, "\t repair            : \n");
+	REPLY_STR_CONTANT(bevent, "\t check             : \n");
 	REPLY_STR_CONTANT(bevent, "\n");
 	return 0;
 }
@@ -327,15 +432,13 @@ struct cmd_mapping_s {
 };
 
 static struct cmd_mapping_s COMMANDS [] = {
-	{"show",    command_show },
 	{"status",  command_show },
-	{"stat",    command_show },
-	{"reload",  command_reload },
-	{"check",   command_check },
+	{"repair",  command_repair },
 	{"start",   command_start },
 	{"stop",    command_stop },
+	{"reload",  command_reload },
+	{"check",   command_check },
 	{"help",    command_help },
-	{"usage",   command_help },
 	{NULL,      NULL}
 };
 
@@ -676,23 +779,6 @@ servers_monitor_one(struct server_sock_s *server)
 	return TRUE;
 }
 
-static gboolean
-servers_save_fd(int fd, const char *url)
-{
-	struct server_sock_s *server;
-
-	if (fd < 0)
-		return FALSE;
-
-	/* should check if the socket is not already monitored */
-	server = g_malloc0(sizeof(*server));
-	server->fd = fd;
-	server->url = g_strdup(url);
-
-	list_of_servers = g_list_prepend(list_of_servers, server);
-	return TRUE;
-}
-
 static int
 servers_monitor_none(void)
 {
@@ -725,33 +811,30 @@ servers_monitor_all(void)
 	return TRUE;
 }
 
-#if 0
-static int
-servers_save_inet(const char *url)
+/**
+ * Creates a server structure based on the file descriptor and
+ * add it to the list
+ */
+static gboolean
+servers_save_fd(int fd, const char *url)
 {
-	int sock;
+	struct server_sock_s *server;
 
-	if (-1 == (sock = __open_inet_server(url)))
-		goto label_error;
+	if (fd < 0)
+		return FALSE;
 
-	if (!servers_save_fd(sock, url))
-		goto label_error;
+	/* should check if the socket is not already monitored */
+	server = g_malloc0(sizeof(*server));
+	server->fd = fd;
+	server->url = g_strdup(url);
 
-	errno = 0;
-	return sock;
-
-label_error:
-	if (sock >= 0) {
-		typeof(errno) errsav;
-		errsav = errno;
-		shutdown(sock, SHUT_RDWR);
-		close(sock);
-		errno = errsav;
-	}
-	return -1;
+	list_of_servers = g_list_prepend(list_of_servers, server);
+	return TRUE;
 }
-#endif
 
+/**
+ * Opens a UNIX server socket then manage a server based on it
+ */
 static int
 servers_save_unix(const char *path)
 {
@@ -777,15 +860,18 @@ label_error:
 	return -1;
 }
 
+/** 
+ * Stops the server socket then 
+ */
 static void
 servers_clean(void)
 {
 	GList *l;
 
+	/* stop */
 	servers_monitor_none();
 
-	TRACE("About to clean the server sockets");
-	
+	/* clean */
 	for (l=list_of_servers; l ; l=l->next) {
 		struct server_sock_s *p_server = l->data;
 
@@ -801,6 +887,9 @@ servers_clean(void)
 	list_of_servers = NULL;
 }
 
+/** 
+ * Reopens all the UNIX server sockets bond on paths that changed.
+ */
 static void
 servers_ensure(void)
 {
@@ -885,7 +974,7 @@ _cfg_extract_parameters (GKeyFile *kf, const char *s, const char *p, GError **er
 	if (!all_keys)
 		goto error;
 	for (current_key=all_keys; current_key && *current_key ;current_key++) {
-		if (!g_ascii_strcasecmp(*current_key,p)) {
+		if (g_str_has_prefix(*current_key, p)) {
 			gchar *value = g_key_file_get_value (kf, s, *current_key, err);
 			g_hash_table_insert (ht, g_strdup(*current_key + strlen(p)), value);
 		}
@@ -901,21 +990,85 @@ error:
 	return NULL;
 }
 
+static gchar*
+__get_and_enlist(GSList **gc, GKeyFile *kf, const gchar *section, const gchar *key)
+{
+	gchar *str;
+
+	if (NULL != (str = g_key_file_get_string(kf, section, key, NULL)))
+		*gc = g_slist_prepend(*gc, str);
+
+	return str;
+}
+
+static void
+my_free1(gpointer p1, gpointer p2)
+{
+	(void) p2;
+	if (p1)
+		g_free(p1);
+}
+
+static gboolean
+_cfg_service_load_env(GKeyFile *kf, const gchar *section, const gchar *str_key, GError **err)
+{
+	gboolean rc = FALSE;
+	GHashTable *ht_env;
+	GHashTableIter iter_env;
+	gpointer k, v;
+	
+	ht_env = _cfg_extract_parameters(kf, section, "env.", err);
+	if (!ht_env)
+		return FALSE;	
+
+	g_hash_table_iter_init(&iter_env, ht_env);
+	while (g_hash_table_iter_next(&iter_env, &k, &v)) {
+		if (0 != supervisor_children_setenv(str_key, (gchar*)k, (gchar*)v)) {
+			WARN("[%s] saved environment [%s]=[%s] : %s",
+				str_key, (gchar*)k, (gchar*)v, strerror(errno));
+			goto exit;
+		}
+		DEBUG("[%s] saved environment variable [%s]=[%s]",
+				str_key, (gchar*)k, (gchar*)v);
+	}
+
+	DEBUG("[%s] environment saved", str_key);
+	rc = TRUE;
+exit:
+	g_hash_table_destroy(ht_env);
+	return rc;
+}
+
 static gboolean
 _cfg_section_service(GKeyFile *kf, const gchar *section, GError **err)
 {
+	GSList *gc = NULL;
 	gboolean rc = FALSE, rc_enable;
 	gchar *str_key;
-	gchar *str_command = NULL, *str_enabled = NULL;
+	gchar *str_command, *str_enabled, *str_ondie, *str_uid, *str_gid,
+		*str_limit_stack, *str_limit_core, *str_limit_fd, *str_wd,
+		*str_group;
 
 	str_key = strchr(section, '.');
 	str_key ++;
-	str_command = g_key_file_get_string(kf, section, "command", err);
-	str_enabled = g_key_file_get_string(kf, section, "enabled", NULL);
+	str_command = __get_and_enlist(&gc, kf, section, "command");
+	str_enabled = __get_and_enlist(&gc, kf, section, "enabled");
+	str_ondie = __get_and_enlist(&gc, kf, section, "on_die");
+	str_uid = __get_and_enlist(&gc, kf, section, "uid");
+	str_gid = __get_and_enlist(&gc, kf, section, "gid");
+	str_group = __get_and_enlist(&gc, kf, section, "group");
+	str_limit_fd = __get_and_enlist(&gc, kf, section, "limit.max_files");
+	str_limit_core = __get_and_enlist(&gc, kf, section, "limit.core_size");
+	str_limit_stack = __get_and_enlist(&gc, kf, section, "limit.stack_size");
+	str_wd = __get_and_enlist(&gc, kf, section, CFG_KEY_PATH_WORKINGDIR);
 
 	if (!supervisor_children_register(str_key, str_command, err))
 		goto label_exit;
 
+	if (*default_working_directory)
+		supervisor_children_set_working_directory(str_key, default_working_directory);
+
+	/* Enables or not */
 	rc_enable = supervisor_children_enable(str_key, _cfg_value_is_true(str_enabled));
 	if (0 > rc_enable) {
 		*err = g_error_printf(LOG_DOMAIN, EINVAL, "Service [%s] cannot be marked [%s] : rc=%d",
@@ -923,14 +1076,70 @@ _cfg_section_service(GKeyFile *kf, const gchar *section, GError **err)
 					rc_enable);
 		goto label_exit;
 	}
+
+	/* on_die management */
+	if (str_ondie) {
+		if (0 == g_ascii_strcasecmp(str_ondie, "cry")) {
+			supervisor_children_set_respawn(str_key, FALSE);
+		}
+		else if (0 == g_ascii_strcasecmp(str_ondie, "exit")) {
+			supervisor_children_set_user_flags(str_key, USERFLAG_ONDIE_EXIT);
+			supervisor_children_set_respawn(str_key, FALSE);
+		}
+		else if (0 == g_ascii_strcasecmp(str_ondie, "respawn"))
+			supervisor_children_set_respawn(str_key, TRUE);
+		else {
+			WARN("Service [%s] has an unexpected [%s] value (%s), set to 'respawn'",
+				str_key, "on_die", str_ondie);
+			supervisor_children_set_respawn(str_key, TRUE);
+		}
+	}
+
+	/* explicit user/group pair */
+	if (str_uid && str_gid) {
+	}
+
+	/* alternative limits */
+	if (str_limit_stack) {
+		gint64 i64 = g_ascii_strtoll(str_limit_stack, NULL, 10);
+		supervisor_children_set_limit(str_key, SUPERV_LIMIT_THREAD_STACK, i64 * 1024);
+	}
+	if (str_limit_fd) {
+		gint64 i64 = g_ascii_strtoll(str_limit_fd, NULL, 10);
+		supervisor_children_set_limit(str_key, SUPERV_LIMIT_MAX_FILES, i64);
+	}
+	if (str_limit_core) {
+		gint64 i64 = g_ascii_strtoll(str_limit_core, NULL, 10);
+		supervisor_children_set_limit(str_key, SUPERV_LIMIT_CORE_SIZE, i64 * 1024 * 1024);
+	}
+	
+	/* Explicit working directory */
+	if (str_wd) {
+		if (!g_file_test(str_wd, G_FILE_TEST_IS_DIR|G_FILE_TEST_IS_EXECUTABLE))
+			WARN("Explicit working directory for [%s] does not exist yet [%s]",
+				str_key, str_wd);
+		supervisor_children_set_working_directory(str_key, str_wd);
+	}
+
+	/* Loads the environment */
+	supervisor_children_clearenv(str_key);
+	if (!_cfg_service_load_env(kf, section, str_key, err)) {
+		ERROR("Failed to load environment for service [%s]", str_key);
+		goto label_exit;
+	}
+
+	/* reset/set the process's group */
+	supervisor_children_set_group(str_key, NULL);
+	if (str_group)
+		supervisor_children_set_group(str_key, str_group);
 	
 	rc = TRUE;
 
 label_exit:
-	if (str_command)
-		g_free(str_command);
-	if (str_enabled)
-		g_free(str_enabled);
+	if (gc) {
+		g_slist_foreach(gc, my_free1, NULL);
+		g_slist_free(gc);
+	}
 	return rc;
 }
 
@@ -1010,6 +1219,12 @@ _cfg_section_default(GKeyFile *kf, const gchar *section, GError **err)
 		if (!g_ascii_strcasecmp(*p_key, CFG_KEY_LIMIT_CORESIZE)) {
 			limit_core_size = atol(str);
 		}
+		else if (!g_ascii_strcasecmp(*p_key, CFG_KEY_PATH_WORKINGDIR)) {
+			if (!g_file_test(*p_key, G_FILE_TEST_IS_DIR|G_FILE_TEST_IS_EXECUTABLE))
+				WARN("Default working directory does not exist yet [%s]", *p_key);
+			bzero(default_working_directory, sizeof(default_working_directory));
+			g_strlcpy(default_working_directory, *p_key, sizeof(default_working_directory)-1);
+		}
 		else if (!g_ascii_strcasecmp(*p_key, CFG_KEY_LIMIT_NBFILES)) {
 			limit_nb_files = atol(str);
 		}
@@ -1071,6 +1286,7 @@ _cfg_section_default(GKeyFile *kf, const gchar *section, GError **err)
 static gboolean
 _cfg_reload_file(GKeyFile *kf, gboolean services_only, GError **err)
 {
+	gboolean rc = FALSE;
 	gchar **groups=NULL, **p_group=NULL;
 
 	groups = g_key_file_get_groups(kf, NULL);
@@ -1081,29 +1297,38 @@ _cfg_reload_file(GKeyFile *kf, gboolean services_only, GError **err)
 	}
 
 	for (p_group=groups; *p_group ;p_group++) {
-		if (g_str_has_prefix(*p_group, "service.")) {
+		TRACE("Reading sectiob");
+		if (g_str_has_prefix(*p_group, "service.")
+				 || g_str_has_prefix(*p_group, "Service.")) {
 			INFO("reconfigure : managing service section [%s]", *p_group);
-			if (!_cfg_section_service(kf, *p_group, err))
+			if (!_cfg_section_service(kf, *p_group, err)) {
+				WARN("invalid service section");
 				goto label_exit;
+			}
 		}
 		else if (!services_only && !g_ascii_strcasecmp(*p_group, "default")) {
 			INFO("reconfigure : loading main parameters from section [%s]", *p_group);
-			if (!_cfg_section_default(kf, *p_group, err))
+			if (!_cfg_section_default(kf, *p_group, err)) {
+				WARN("invalid default section");
 				goto label_exit;
+			}
 		}
 		else if (!services_only && !g_ascii_strcasecmp(*p_group, "alerts")) {
 			INFO("reconfigure : loading alerting parameters from section [%s]", *p_group);
-			if (!_cfg_section_alert(kf, *p_group, err))
+			if (!_cfg_section_alert(kf, *p_group, err)) {
+				WARN("Invalid alerts section");
 				goto label_exit;
+			}
 		}
 		else {
 			INFO("reconfigure : ignoring section [%s]", *p_group);
 		}
 	}
+	rc = TRUE;
 
 label_exit:
 	g_strfreev(groups);
-	return TRUE;
+	return rc;
 }
 
 static gboolean
@@ -1115,19 +1340,22 @@ _cfg_reload(gboolean services_only, GError **err)
 	kf = g_key_file_new();
 
 	if (!g_key_file_load_from_file(kf, config_path, 0, err)) {
-		goto label_exit;
-	}
-	if (!_cfg_reload_file(kf, services_only, err)) {
+		ERROR("Conf not parseable from [%s]", config_path);
 		goto label_exit;
 	}
 
+	/* First load the main files */
+	if (!_cfg_reload_file(kf, services_only, err)) {
+		ERROR("Conf not loadable from [%s]", config_path);
+		goto label_exit;
+	}
+
+	/* Then load "globbed" sub files, but only services */
 	if (config_subdir) {
-#if 0
 		int notify_error(const char *path, int en) {
 			NOTICE("errno=%d %s : %s", en, path, strerror(en));
 			return 0;
 		}
-#endif
 		int glob_rc;
 		glob_t subfiles_glob;
 
@@ -1135,7 +1363,7 @@ _cfg_reload(gboolean services_only, GError **err)
 
 		DEBUG("Loading services files matching [%s]", config_subdir);
 
-		glob_rc = glob(config_subdir, GLOB_NOSORT|GLOB_MARK, NULL, &subfiles_glob);
+		glob_rc = glob(config_subdir, GLOB_NOSORT|GLOB_MARK, notify_error, &subfiles_glob);
 		if (glob_rc != 0) {
 			if (glob_rc == GLOB_NOMATCH)
 				NOTICE("Service file pattern matched no file!");
@@ -1171,7 +1399,7 @@ _cfg_reload(gboolean services_only, GError **err)
 	}
 
 	rc = TRUE;
-	INFO("Configuration laoded from [%s]", config_path);
+	INFO("Configuration loaded from [%s]", config_path);
 	
 label_exit:
 	if (kf)
@@ -1260,6 +1488,9 @@ main(int argc, char ** args)
 	struct event_base *libevents_handle = NULL;
 
 	bzero(sock_path, sizeof(sock_path));
+	bzero(pidfile_path, sizeof(pidfile_path));
+	bzero(default_working_directory, sizeof(default_working_directory));
+
 	g_strlcpy(sock_path, GRIDINIT_SOCK_PATH, sizeof(sock_path)-1);
 
 	log4c_init();
@@ -1271,9 +1502,12 @@ main(int argc, char ** args)
 
 	close(0);/* We will never read the standard input */
 	if (flag_daemon) {
+		if (0 != daemon(1,0)) {
+			FATAL("Failed to daemonize : %s", strerror(errno));
+			goto label_exit;
+		}
 		close(1);
 		close(2);
-		daemon(1,0);
 		write_pid_file();
 	}
 	
@@ -1308,11 +1542,13 @@ main(int argc, char ** args)
 
 		while (flag_running) {
 			
-			/* Ma,age the events that occured */
+			/* Manage the events that occured */
 			if (flag_catharsis) {
 				proc_count = supervisor_children_catharsis(NULL, alert_proc_died);
 				if (proc_count) {
 					DEBUG("Recycled %u processes", proc_count);
+					if (!flag_running)
+						break;
 					proc_count = supervisor_children_startall(NULL, alert_proc_started);
 					DEBUG("Started %u processes", proc_count);
 				}
@@ -1320,6 +1556,8 @@ main(int argc, char ** args)
 					WARN("Recycled no process");
 				}
 				flag_catharsis = 0;
+				if (!flag_running)
+					break;
 			}
 
 			if (flag_check_socket)
@@ -1330,8 +1568,6 @@ main(int argc, char ** args)
 				ERROR("event_loop() error : %s", strerror(errno));
 				break;
 			}
-
-			(void) __alert_processes_not_respawned();
 		}
 	} while (0);
 

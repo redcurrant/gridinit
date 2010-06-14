@@ -77,7 +77,7 @@ my_setrlimit(int res_id, struct rlimit *rl)
 }
 
 int
-supervisor_limit_set(enum supervisor_limit_e what, int32_t value)
+supervisor_limit_set(enum supervisor_limit_e what, gint64 value)
 {
 	struct rlimit rl, rl_old;
 	int res_id;
@@ -97,8 +97,10 @@ supervisor_limit_set(enum supervisor_limit_e what, int32_t value)
 	rl.rlim_cur = value;
 	rl.rlim_max = limit_max(value, rl_old.rlim_max);
 	if (0 == my_setrlimit(res_id, &rl)) {
-		NOTICE("supervisor_limit_set(%s,%ld) : new {%ld,%ld}",
+#ifdef HAVE_EXTRA_DEBUG
+		TRACE("supervisor_limit_set(%s,%ld) : new {%ld,%ld}",
 			get_rlimit_name(what), value, rl.rlim_cur, rl.rlim_max);
+#endif
 		return 0;
 	}
 	if (errno != EPERM) {
@@ -110,12 +112,33 @@ supervisor_limit_set(enum supervisor_limit_e what, int32_t value)
 	rl.rlim_cur = limit_min(value, rl_old.rlim_max);
 	rl.rlim_max = rl_old.rlim_max;
 	if (0 == my_setrlimit(res_id, &rl)) {
-		NOTICE("supervisor_limit_set(%s,%ld) : truncated {%ld,%ld}",
+#ifdef HAVE_EXTRA_DEBUG
+		DEBUG("supervisor_limit_set(%s,%ld) : truncated {%ld,%ld}",
 			get_rlimit_name(what), value, rl.rlim_cur, rl.rlim_max);
+#endif
 		return 0;
 	}
 				
 	WARN("supervisor_limit_set(%s,%ld) error : %s", get_rlimit_name(what), value, strerror(errno));
 	return -1;
+}
+
+int
+supervisor_limit_get(enum supervisor_limit_e what, gint64 *value)
+{
+	struct rlimit rl;
+	int res_id;
+
+	if (!value) {
+		errno = EINVAL;
+		return -1;
+	}
+
+	res_id = get_rlimit_id(what);
+	if (-1 == getrlimit(res_id, &rl))
+		return -1;
+
+	*value = rl.rlim_cur;
+	return 0;
 }
 

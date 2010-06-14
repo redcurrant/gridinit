@@ -4,6 +4,9 @@
 #ifndef LOG_DOMAIN
 # define LOG_DOMAIN "gridinit.spoolmess"
 #endif
+#include <stdlib.h>
+#include <strings.h>
+#include <unistd.h>
 #include <glib.h>
 #include "../main/gridinit_alerts.h"
 #define DEFAULT_SOPCODE "MUT-GRD-9000"
@@ -15,7 +18,7 @@ static char CODE_OBJET[64] = "";
 static void
 gridinit_spoolmess_handle(void *udata, int event, const char *msg)
 {
-	int offset;
+	int offset, _s;
 	char working_message[1024];
 	const char *criticity;
 	const char *default_msg;
@@ -34,7 +37,7 @@ gridinit_spoolmess_handle(void *udata, int event, const char *msg)
 		criticity = "MAJOR";
 		default_msg = "a process died";
 		break;
-	case GRIDINIT_EVENT_NOTRESPAWNED:
+	case GRIDINIT_EVENT_BROKEN:
 		criticity = "CRITIC";
 		default_msg = "a process could not be respawned";
 		break;
@@ -49,11 +52,11 @@ gridinit_spoolmess_handle(void *udata, int event, const char *msg)
 
 	if (*CODE_CLIENT)
 		offset += g_snprintf(working_message+offset, sizeof(working_message)-offset,
-			"[~BCL]%.*s[~ECL]", sizeof(CODE_CLIENT), CODE_CLIENT);
+			"[~BCL]%.*s[~ECL]", (_s = sizeof(CODE_CLIENT)), CODE_CLIENT);
 
 	if (*CODE_OBJET)
 		offset += g_snprintf(working_message+offset, sizeof(working_message)-offset,
-			"[~BCO]%.*s[~ECO]", sizeof(CODE_OBJET), CODE_OBJET);
+			"[~BCO]%.*s[~ECO]", (_s = sizeof(CODE_OBJET)), CODE_OBJET);
 
 	if (offset < sizeof(working_message)) {
 		offset += g_snprintf(working_message+offset, sizeof(working_message)-offset, "%s",

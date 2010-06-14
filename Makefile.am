@@ -1,1 +1,6 @@
-SUBDIRS = lib main alert_spoolmess
+SUBDIRS = lib main
+
+if SYSMM_ENABLED
+SUBDIRS += alert_spoolmess
+endif
+

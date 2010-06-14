@@ -69,7 +69,27 @@ AC_CHECK_FILE([$LIBEVENT_DIR/include/event.h],,[AC_MSG_ERROR([not found])])
 AC_SUBST(LIBEVENT_DIR)
 AC_SUBST(LIBEVENT_LIBDIR)
 
+# Toggle specific modules
+AC_ARG_ENABLE([spoolmess],
+  AS_HELP_STRING([--enable-spoolmess=DIR],
+    [Builds the alert_module based on spoolmess]),
+  [
+	SYSMM_DEFINE=[-DSPOOLMESS=1]
+	AC_SUBST(SYSMM_DEFINE)
+
+	AC_DEFINE([HAVE_SYSMM], 1, [NetApp support has been trigerred])
+	AC_SUBST(SYSMM_DEFINE)
+
+	SYSMM_LIBS="$LSYSMM"
+	AC_SUBST(SYSMM_LIBS)
+
+	sysmm_enabled=true
+  ]
+)
+AM_CONDITIONAL([SYSMM_ENABLED], [test x$sysmm_enabled = xtrue])
+
 # Checks for libraries.
+AM_PATH_LOG4C
 AM_PATH_GLIB_2_0(2.16.0,,AC_MSG_ERROR(glib version >= 2.16 required),[gmodule gthread])
 
 # Checks for header files.

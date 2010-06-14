@@ -1,9 +1,9 @@
 #ifndef __GRIDINIT_ALERTS_H__
 # define __GRIDINIT_ALERTS_H__
 
-#define GRIDINIT_EVENT_STARTED 1
-#define GRIDINIT_EVENT_DIED 2
-#define GRIDINIT_EVENT_NOTRESPAWNED 3
+#define GRIDINIT_EVENT_STARTED   1
+#define GRIDINIT_EVENT_DIED      2
+#define GRIDINIT_EVENT_BROKEN    3
 
 /**
  * @param udata the user data provided in the exported structure 
