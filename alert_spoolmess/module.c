@@ -9,7 +9,7 @@
 #include <unistd.h>
 #include <glib.h>
 #include "../main/gridinit_alerts.h"
-#define DEFAULT_SOPCODE "MUT-GRD-9000"
+#define DEFAULT_SOPCODE "MUT-GRD-7000"
 
 static char SOPCODE[sizeof(DEFAULT_SOPCODE)] = DEFAULT_SOPCODE;
 static char CODE_CLIENT[64] = "";
@@ -30,11 +30,11 @@ gridinit_spoolmess_handle(void *udata, int event, const char *msg)
 
 	switch (event) {
 	case GRIDINIT_EVENT_STARTED:
-		criticity = "MINOR";
+		criticity = "WARNING";
 		default_msg = "a process has been started";
 		break;
 	case GRIDINIT_EVENT_DIED:
-		criticity = "MAJOR";
+		criticity = "MINOR";
 		default_msg = "a process died";
 		break;
 	case GRIDINIT_EVENT_BROKEN:
