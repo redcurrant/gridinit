@@ -157,6 +157,15 @@ int supervisor_children_set_group(const gchar *key, const gchar *group);
  */
 int supervisor_children_get_info(const gchar *key, struct child_info_s *ci);
 
+/**
+ *
+ * @param key
+ * @param uid
+ * @param gid
+ * @return
+ */
+int supervisor_children_set_ids(const gchar *key, gint32 uid, gint32 gid);
+
 /* Fork and pipe ----------------------------------------------------------- */
 
 /** 

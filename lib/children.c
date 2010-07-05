@@ -8,10 +8,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <unistd.h>
+#include <pwd.h>
+#include <grp.h>
 #include <sys/types.h>
 #include <sys/wait.h>
-#include <unistd.h>
- 
+
 #include <glib.h>
 
 #include "./gridinit-utils.h"
@@ -289,20 +291,29 @@ _child_start(struct child_s *sd, void *udata, supervisor_cb_f cb)
 
 	case 0: /*child*/
 		reset_sighandler();
-		sd->pid = getpid();
 		
 		if (cb) {
 			struct child_info_s ci;
+			sd->pid = getpid();
 			_child_get_info(sd, &ci);
 			cb(udata, &ci);
 		}
 
+		/* change the rights before changing the working directory */
+		if (getuid() == 0) {
+			if (-1 == setgid(sd->gid))
+				WARN("setgid(%d) failed (errno=%d %s), currently with gid [%d]",
+					sd->gid, errno, strerror(errno), getgid());
+			if (-1 == setuid(sd->uid))
+				WARN("setuid(%d) failed (errno=%d %s), currently with uid [%d]",
+					sd->uid, errno, strerror(errno), getuid());
+		}
+
 		if (sd->working_directory) {
-			if (-1 == chdir(sd->working_directory)) {
+			if (-1 == chdir(sd->working_directory))
 				WARN("chdir(%s) failed (%s), currently in [%s]",
 					sd->working_directory, strerror(errno),
 					g_get_current_dir());
-			}
 		}
 
 		env = _child_build_env(sd);
@@ -645,27 +656,23 @@ supervisor_children_enable(const char *key, gboolean enable)
 		errno = EINVAL;
 		return -1;
 	}
-	
-	FOREACH_CHILD(sd) {
-		if (0 == g_ascii_strcasecmp(sd->key, key)) {
-			errno = 0;
-			if (!enable) {
-				if (FLAG_HAS(sd,MASK_DISABLED))
-					return 0;
-				FLAG_SET(sd,MASK_DISABLED); 
-				return 1;
-			}
-			else {
-				if (!FLAG_HAS(sd,MASK_DISABLED))
-					return 0;
-				FLAG_DEL(sd,MASK_DISABLED); 
-				return 1;
-			}
-		}
+	if (!(sd = supervisor_get_child(key))) {
+		errno = ENOENT;
+		return -1;
 	}
-	
-	errno = ENOENT;
-	return -1;
+
+	errno = 0;
+	if (!enable) {
+		if (FLAG_HAS(sd,MASK_DISABLED))
+			return 0;
+		FLAG_SET(sd,MASK_DISABLED); 
+		return 1;
+	}
+
+	if (!FLAG_HAS(sd,MASK_DISABLED))
+		return 0;
+	FLAG_DEL(sd,MASK_DISABLED); 
+	return 1;
 }
 
 int
@@ -677,27 +684,23 @@ supervisor_children_set_respawn(const char *key, gboolean enabled)
 		errno = EINVAL;
 		return -1;
 	}
-	
-	FOREACH_CHILD(sd) {
-		if (0 == g_ascii_strcasecmp(sd->key, key)) {
-			errno = 0;
-			if (enabled) {
-				if (FLAG_HAS(sd,MASK_RESPAWN))
-					return 0;
-				FLAG_SET(sd,MASK_RESPAWN);
-				return 1;
-			}
-			else {
-				if (!FLAG_HAS(sd,MASK_RESPAWN))
-					return 0;
-				FLAG_DEL(sd,MASK_RESPAWN);
-				return 1;
-			}
-		}
+	if (!(sd = supervisor_get_child(key))) {
+		errno = ENOENT;
+		return -1;
 	}
-	
-	errno = ENOENT;
-	return -1;
+
+	errno = 0;
+	if (enabled) {
+		if (FLAG_HAS(sd,MASK_RESPAWN))
+			return 0;
+		FLAG_SET(sd,MASK_RESPAWN);
+		return 1;
+	}
+
+	if (!FLAG_HAS(sd,MASK_RESPAWN))
+		return 0;
+	FLAG_DEL(sd,MASK_RESPAWN);
+	return 1;
 }
 
 int
@@ -709,19 +712,16 @@ supervisor_children_repair(const char *key)
 		errno = EINVAL;
 		return -1;
 	}
-	
-	FOREACH_CHILD(sd) {
-		if (0 == g_ascii_strcasecmp(sd->key, key)) {
-			errno = 0;
-			if (!FLAG_HAS(sd, MASK_BROKEN))
-				return 0;
-			FLAG_DEL(sd, MASK_BROKEN);
-			return 1;
-		}
+	if (!(sd = supervisor_get_child(key))) {
+		errno = ENOENT;
+		return -1;
 	}
-	
-	errno = ENOENT;
-	return -1;
+
+	errno = 0;
+	if (!FLAG_HAS(sd, MASK_BROKEN))
+		return 0;
+	FLAG_DEL(sd, MASK_BROKEN);
+	return 1;
 }
 
 int
@@ -746,33 +746,34 @@ supervisor_children_set_limit(const gchar *key, enum supervisor_limit_e what, gi
 {
 	struct child_s *sd;
 
+	if (!key) {
+		errno = EINVAL;
+		return -1;
+	}
 	if (what < SUPERV_LIMIT_THREAD_STACK || what > SUPERV_LIMIT_CORE_SIZE) {
 		errno = EINVAL;
 		return -1;
 	}
-
-	FOREACH_CHILD(sd) {
-		if (0 == g_ascii_strcasecmp(sd->key, key)) {
-			errno = 0;
-			switch (what) {
-			case SUPERV_LIMIT_THREAD_STACK:
-				sd->rlimits.stack_size = value;
-				return 0;
-			case SUPERV_LIMIT_CORE_SIZE:
-				sd->rlimits.core_size = value;
-				return 0;
-			case SUPERV_LIMIT_MAX_FILES:
-				sd->rlimits.nb_files = value;
-				return 0;
-			default:
-				errno = EINVAL;
-				return -1;
-			}
-		}
+	if (!(sd = supervisor_get_child(key))) {
+		errno = ENOENT;
+		return -1;
 	}
-	
-	errno = ENOENT;
-	return -1;
+
+	errno = 0;
+	switch (what) {
+		case SUPERV_LIMIT_THREAD_STACK:
+			sd->rlimits.stack_size = value;
+			return 0;
+		case SUPERV_LIMIT_CORE_SIZE:
+			sd->rlimits.core_size = value;
+			return 0;
+		case SUPERV_LIMIT_MAX_FILES:
+			sd->rlimits.nb_files = value;
+			return 0;
+		default:
+			errno = EINVAL;
+			return -1;
+	}
 }
 
 int
@@ -784,45 +785,41 @@ supervisor_children_set_working_directory(const gchar *key, const gchar *dir)
 		errno = EINVAL;
 		return -1;
 	}
-
-	FOREACH_CHILD(sd) {
-		if (0 == g_ascii_strcasecmp(sd->key, key)) {
-			if (sd->working_directory)
-				g_free(sd->working_directory);
-			sd->working_directory = g_strdup(dir);
-		}
+	if (!(sd = supervisor_get_child(key))) {
+		errno = ENOENT;
+		return -1;
 	}
-	
-	errno = ENOENT;
-	return -1;
+
+	if (sd->working_directory)
+		g_free(sd->working_directory);
+	sd->working_directory = g_strdup(dir);
+
+	errno = 0;
+	return 0;
 }
 
 int
 supervisor_children_setenv(const gchar *key, const gchar *envkey,
 	const gchar *envval)
 {
+	GSList *kv;
 	struct child_s *sd;
 
 	if (!key || !envkey ||!envval) {
 		errno = EINVAL;
 		return -1;
 	}
-
-	FOREACH_CHILD(sd) {
-		if (0 == g_ascii_strcasecmp(sd->key, key)) {
-			GSList *kv;
-
-			kv = NULL;
-			kv = g_slist_append(kv, g_strdup(envkey));
-			kv = g_slist_append(kv, g_strdup(envval));
-
-			sd->env = g_slist_concat(sd->env, kv);
-			errno = 0;
-			return 0;
-		}
+	if (!(sd = supervisor_get_child(key))) {
+		errno = ENOENT;
+		return -1;
 	}
-	errno = ENOENT;
-	return -1;
+
+	kv = NULL;
+	kv = g_slist_append(kv, g_strdup(envkey));
+	kv = g_slist_append(kv, g_strdup(envval));
+	sd->env = g_slist_concat(sd->env, kv);
+	errno = 0;
+	return 0;
 }
 
 int
@@ -835,21 +832,18 @@ supervisor_children_clearenv(const gchar *key)
 		errno = EINVAL;
 		return -1;
 	}
-
-	FOREACH_CHILD(sd) {
-		if (0 == g_ascii_strcasecmp(sd->key, key)) {
-			if (sd->env) {
-				g_slist_foreach(sd->env, __free, NULL);
-				g_slist_free(sd->env);
-			}
-			sd->env = NULL;
-			errno = 0;
-			return 0;
-		}
+	if (!(sd = supervisor_get_child(key))) {
+		errno = ENOENT;
+		return -1;
 	}
 
-	errno = ENOENT;
-	return -1;
+	if (sd->env) {
+		g_slist_foreach(sd->env, __free, NULL);
+		g_slist_free(sd->env);
+	}
+	sd->env = NULL;
+	errno = 0;
+	return 0;
 }
 
 int
@@ -861,17 +855,14 @@ supervisor_children_set_user_flags(const gchar *key, guint32 flags)
 		errno = EINVAL;
 		return -1;
 	}
-
-	FOREACH_CHILD(sd) {
-		if (0 == g_ascii_strcasecmp(sd->key, key)) {
-			sd->user_flags = flags;
-			errno = 0;
-			return 0;
-		}
+	if (!(sd = supervisor_get_child(key))) {
+		errno = ENOENT;
+		return -1;
 	}
 
-	errno = ENOENT;
-	return -1;
+	sd->user_flags = flags;
+	errno = 0;
+	return 0;
 }
 
 int
@@ -883,7 +874,6 @@ supervisor_children_set_group(const gchar *key, const gchar *group)
 		errno = EINVAL;
 		return -1;
 	}
-
 	if (!(sd = supervisor_get_child(key))) {
 		errno = ENOENT;
 		return -1;
@@ -892,5 +882,27 @@ supervisor_children_set_group(const gchar *key, const gchar *group)
 	bzero(sd->group, sizeof(sd->group));
 	if (group)
 		g_strlcpy(sd->group, group, sizeof(sd->group)-1);
+	errno = 0;
 	return 0;
 }
+
+int
+supervisor_children_set_ids(const gchar *key, gint32 uid, gint32 gid)
+{
+	struct child_s *sd;
+
+	if (!key) {
+		errno = EINVAL;
+		return -1;
+	}
+	if (!(sd = supervisor_get_child(key))) {
+		errno = ENOENT;
+		return -1;
+	}
+
+	sd->uid = uid;
+	sd->gid = gid;
+	errno = 0;
+	return 0;
+}
+

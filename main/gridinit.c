@@ -12,6 +12,9 @@
 #include <strings.h>
 #include <math.h>
 #include <signal.h>
+#include <unistd.h>
+#include <pwd.h>
+#include <grp.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -20,7 +23,6 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/un.h>
-#include <unistd.h>
 
 #include <glob.h>
 
@@ -1010,6 +1012,60 @@ my_free1(gpointer p1, gpointer p2)
 }
 
 static gboolean
+_str_is_num(const gchar *s)
+{
+	for (; *s ; s++) {
+		if (!g_ascii_isdigit(*s))
+			return FALSE;
+	}
+	return TRUE;
+}
+
+/** XXX JFS Linux-specific code */
+static gboolean
+uid_exists(const gchar *str, gint32 *id)
+{
+	struct passwd pwd, *p_pwd;
+	gchar buf[1024];
+
+	if (_str_is_num(str)) {
+		gint64 i64;
+
+		i64 = g_ascii_strtoll(str, NULL, 10);
+		*id = i64;
+		return TRUE;
+	}
+
+	if (0 != getpwnam_r(str, &pwd, buf, sizeof(buf), &p_pwd))
+		return FALSE;
+		
+	*id = pwd.pw_uid;
+	return TRUE;
+}
+
+/** XXX JFS Linux-specific code */
+static gboolean
+gid_exists(const gchar *str, gint32 *id)
+{
+	struct group grp, *p_grp;
+	gchar buf[1024];
+
+	if (_str_is_num(str)) {
+		gint64 i64;
+
+		i64 = g_ascii_strtoll(str, NULL, 10);
+		*id = i64;
+		return TRUE;
+	}
+
+	if (0 != getgrnam_r(str, &grp, buf, sizeof(buf), &p_grp))
+		return FALSE;
+		
+	*id = grp.gr_gid;
+	return TRUE;
+}
+
+static gboolean
 _cfg_service_load_env(GKeyFile *kf, const gchar *section, const gchar *str_key, GError **err)
 {
 	gboolean rc = FALSE;
@@ -1096,7 +1152,24 @@ _cfg_section_service(GKeyFile *kf, const gchar *section, GError **err)
 	}
 
 	/* explicit user/group pair */
-	if (str_uid && str_gid) {
+	if (str_uid && str_gid && *str_uid && *str_uid) {
+		gint32 uid, gid;
+
+		uid = gid = -1;
+		if (!uid_exists(str_uid, &uid)) {
+			/* Invalid user */
+			*err = g_error_printf(LOG_DOMAIN, EINVAL, "Service [%s] cannot cannot receive UID [%s] : errno=%d %s",
+		                        str_key, str_uid, errno, strerror(errno));
+			goto label_exit;
+		}
+		if (!gid_exists(str_gid, &gid)) {
+			/* Invalid group */
+			*err = g_error_printf(LOG_DOMAIN, EINVAL, "Service [%s] cannot cannot receive GID [%s] : errno=%d %s",
+		                        str_key, str_gid, errno, strerror(errno));
+			goto label_exit;
+		}
+	
+		supervisor_children_set_ids(str_key, uid, gid);
 	}
 
 	/* alternative limits */
