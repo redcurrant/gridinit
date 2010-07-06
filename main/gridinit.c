@@ -1349,7 +1349,8 @@ _cfg_section_default(GKeyFile *kf, const gchar *section, GError **err)
 	(void) supervisor_limit_set(SUPERV_LIMIT_THREAD_STACK, limit_thread_stack * 1024);
 
 	if (*buf_includes) {
-		g_free(config_subdir);
+		if (config_subdir)
+			g_free(config_subdir);
 		config_subdir = g_strndup(buf_includes, sizeof(buf_includes));
 	}
 
