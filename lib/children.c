@@ -602,7 +602,7 @@ supervisor_children_register(const gchar *key, const gchar *cmd, GError **error)
 
 	/* set the system limits */
 	sd->rlimits.core_size = -1;
-	sd->rlimits.stack_size = 8192;
+	sd->rlimits.stack_size = 8192 * 1024;
 	sd->rlimits.nb_files = 32768;
 	
 	/*ring insertion*/
