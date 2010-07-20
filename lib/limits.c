@@ -15,6 +15,7 @@
 #include <sys/resource.h>
 #include <unistd.h>
 
+#if 0
 static rlim_t
 limit_min(rlim_t r1, rlim_t r2)
 {
@@ -34,6 +35,7 @@ limit_max(rlim_t r1, rlim_t r2)
 		return r1;
 	return MAX(r1,r2);
 }
+#endif
 
 static const char*
 get_rlimit_name(enum supervisor_limit_e what)
@@ -76,50 +78,50 @@ my_setrlimit(int res_id, struct rlimit *rl)
 	return rc;
 }
 
+static rlim_t
+get_rlim_from_i64(gint64 i64)
+{
+	rlim_t res;
+	if (i64 == RLIM_INFINITY || i64 < 0)
+		return RLIM_INFINITY;
+	return (res = i64);
+}
+
 int
 supervisor_limit_set(enum supervisor_limit_e what, gint64 value)
 {
 	struct rlimit rl, rl_old;
+	rlim_t _val;
 	int res_id;
 
+	_val = get_rlim_from_i64(value);
 	res_id = get_rlimit_id(what);
-	if (-1 == getrlimit(res_id, &rl_old)) {
-		WARN("supervisor_limit_set(%s,%ld) error : %s", get_rlimit_name(what), value, strerror(errno));
-		return -1;
-	}
-
-#ifdef HAVE_EXTRA_DEBUG
-	TRACE("supervisor_limit_set(%s,%ld) : current {%ld,%ld}",
-		get_rlimit_name(what), value, rl_old.rlim_cur, rl_old.rlim_max);
-#endif
 
 	/* Try with the raw value */
-	rl.rlim_cur = value;
-	rl.rlim_max = limit_max(value, rl_old.rlim_max);
-	if (0 == my_setrlimit(res_id, &rl)) {
-#ifdef HAVE_EXTRA_DEBUG
-		TRACE("supervisor_limit_set(%s,%ld) : new {%ld,%ld}",
-			get_rlimit_name(what), value, rl.rlim_cur, rl.rlim_max);
-#endif
+	rl.rlim_cur = _val;
+	rl.rlim_max = _val;
+	if (0 == my_setrlimit(res_id, &rl))
 		return 0;
-	}
 	if (errno != EPERM) {
-		WARN("supervisor_limit_set(%s,%ld) error : %s", get_rlimit_name(what), value, strerror(errno));
+		WARN("supervisor_limit_set(%s,%"G_GINT64_FORMAT") error : %s",
+				get_rlimit_name(what), value, strerror(errno));
 		return -1;
 	}
 				
 	/* The process has no special privileges, set the maximum available */
-	rl.rlim_cur = limit_min(value, rl_old.rlim_max);
-	rl.rlim_max = rl_old.rlim_max;
-	if (0 == my_setrlimit(res_id, &rl)) {
-#ifdef HAVE_EXTRA_DEBUG
-		DEBUG("supervisor_limit_set(%s,%ld) : truncated {%ld,%ld}",
-			get_rlimit_name(what), value, rl.rlim_cur, rl.rlim_max);
-#endif
-		return 0;
+	if (-1 == getrlimit(res_id, &rl_old)) {
+		WARN("supervisor_limit_get(%s,%"G_GINT64_FORMAT") error : %s",
+				get_rlimit_name(what), value, strerror(errno));
+		return -1;
 	}
+
+	rl.rlim_cur = rl_old.rlim_max;
+	rl.rlim_max = rl_old.rlim_max;
+	if (0 == my_setrlimit(res_id, &rl))
+		return 0;
 				
-	WARN("supervisor_limit_set(%s,%ld) error : %s", get_rlimit_name(what), value, strerror(errno));
+	WARN("supervisor_limit_set(%s,%"G_GINT64_FORMAT") error : %s",
+			get_rlimit_name(what), value, strerror(errno));
 	return -1;
 }
 
@@ -138,7 +140,7 @@ supervisor_limit_get(enum supervisor_limit_e what, gint64 *value)
 	if (-1 == getrlimit(res_id, &rl))
 		return -1;
 
-	*value = rl.rlim_cur;
+	*value = (rl.rlim_cur == RLIM_INFINITY) ? 1 : rl.rlim_cur;
 	return 0;
 }
 

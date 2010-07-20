@@ -2,7 +2,7 @@
 # include "../config.h"
 #endif
 #ifndef LOG_DOMAIN
-# define LOG_DOMAIN "gridinit.limits"
+# define LOG_DOMAIN "gridinit.children"
 #endif
 
 #include <stdlib.h>
@@ -126,7 +126,11 @@ _child_get_info(struct child_s *c, struct child_info_s *ci)
 	ci->counter_died = c->counter_died;
 	ci->last_start_attempt = c->last_start_attempt;
 	ci->last_kill_attempt = c->last_kill_attempt;
-	memcpy(&(ci->rlimits), &(c->rlimits), sizeof(c->rlimits));
+
+	ci->rlimits.core_size = c->rlimits.core_size;
+	ci->rlimits.stack_size = c->rlimits.stack_size;
+	ci->rlimits.nb_files = c->rlimits.nb_files;
+
 	ci->group = c->group;
 }
 
@@ -167,40 +171,45 @@ _wait_for_dead_child(pid_t *ptr_pid)
 	return 0;
 }
 
-static void
-_child_set_rlimits(const gchar *what, struct my_rlimits_s *new_limits, struct my_rlimits_s *save)
+static gint64
+get_limit64(long val)
 {
 	gint64 i64;
 
-	DEBUG("Setting limits before starting [%s]", what);
-
-	i64 = 0;
-	(void) supervisor_limit_get(SUPERV_LIMIT_THREAD_STACK, &i64);
-	save->stack_size = i64;
-
-	i64 = 1024;
-	(void) supervisor_limit_get(SUPERV_LIMIT_MAX_FILES, &i64);
-	save->nb_files = i64;
-
-	i64 = -1;
-	(void) supervisor_limit_get(SUPERV_LIMIT_CORE_SIZE, &i64);
-	save->core_size = i64;
-
-	(void) supervisor_limit_set(SUPERV_LIMIT_THREAD_STACK, (i64 = new_limits->stack_size));
-	(void) supervisor_limit_set(SUPERV_LIMIT_MAX_FILES,    (i64 = new_limits->nb_files));
-	(void) supervisor_limit_set(SUPERV_LIMIT_CORE_SIZE,    (i64 = new_limits->core_size));
+	i64 = val;
+	if (val < 0 || val == RLIM_INFINITY)
+		i64 = -1;
+	return i64;
 }
 
 static void
-_child_restore_rlimits(const gchar *what, struct my_rlimits_s *save)
+_child_set_rlimits(struct my_rlimits_s *new_limits, struct my_rlimits_s *save)
 {
 	gint64 i64;
 
-	DEBUG("Restoring limits having started [%s]", what);
+	i64 = RLIM_INFINITY;
+	(void) supervisor_limit_get(SUPERV_LIMIT_THREAD_STACK, &i64);
+	save->stack_size = i64;
 
-	(void) supervisor_limit_set(SUPERV_LIMIT_THREAD_STACK, (i64 = save->stack_size));
-	(void) supervisor_limit_set(SUPERV_LIMIT_MAX_FILES,    (i64 = save->nb_files));
-	(void) supervisor_limit_set(SUPERV_LIMIT_CORE_SIZE,    (i64 = save->core_size));
+	i64 = RLIM_INFINITY;
+	(void) supervisor_limit_get(SUPERV_LIMIT_MAX_FILES, &i64);
+	save->nb_files = i64;
+
+	i64 = RLIM_INFINITY;
+	(void) supervisor_limit_get(SUPERV_LIMIT_CORE_SIZE, &i64);
+	save->core_size = i64;
+
+	(void) supervisor_limit_set(SUPERV_LIMIT_THREAD_STACK, get_limit64(new_limits->stack_size));
+	(void) supervisor_limit_set(SUPERV_LIMIT_MAX_FILES,    get_limit64(new_limits->nb_files));
+	(void) supervisor_limit_set(SUPERV_LIMIT_CORE_SIZE,    get_limit64(new_limits->core_size));
+}
+
+static void
+_child_restore_rlimits(struct my_rlimits_s *save)
+{
+	(void) supervisor_limit_set(SUPERV_LIMIT_THREAD_STACK, get_limit64(save->stack_size));
+	(void) supervisor_limit_set(SUPERV_LIMIT_MAX_FILES,    get_limit64(save->nb_files));
+	(void) supervisor_limit_set(SUPERV_LIMIT_CORE_SIZE,    get_limit64(save->core_size));
 }
 
 /**
@@ -275,11 +284,18 @@ _child_start(struct child_s *sd, void *udata, supervisor_cb_f cb)
 		return -1;
 	}
 	
+	bzero(&saved_limits, sizeof(saved_limits));
+
 	pid_father = getpid();
 	sd->last_start_attempt = time(0);
 
-	_child_set_rlimits(sd->key, &(sd->rlimits), &saved_limits);
+	_child_set_rlimits(&(sd->rlimits), &saved_limits);
 	sd->pid = fork();
+	_child_restore_rlimits(&saved_limits);
+
+	INFO("set limits (%ld,%ld,%ld) then restored (%ld,%ld,%ld) (stack,file,core)"
+		, sd->rlimits.stack_size, sd->rlimits.nb_files, sd->rlimits.core_size
+		, saved_limits.stack_size, saved_limits.nb_files, saved_limits.core_size);
 
 	switch (sd->pid) {
 
@@ -336,7 +352,6 @@ _child_start(struct child_s *sd, void *udata, supervisor_cb_f cb)
 		return 0;/*makes everybody happy*/
 
 	default: /*father*/
-		_child_restore_rlimits(sd->key, &saved_limits);
 		FLAG_SET(sd,MASK_STARTED);
 		FLAG_DEL(sd,MASK_BROKEN);
 		sd->counter_started ++;
@@ -553,7 +568,6 @@ supervisor_children_fini(void)
 gboolean
 supervisor_children_register(const gchar *key, const gchar *cmd, GError **error)
 {
-	gint64 i64;
 	struct child_s *sd;
 
 	/*check if the service is present*/
@@ -587,17 +601,9 @@ supervisor_children_register(const gchar *key, const gchar *cmd, GError **error)
 	
 
 	/* set the system limits */
-	i64 = -1;
-	supervisor_limit_get(SUPERV_LIMIT_CORE_SIZE, &i64);
-	sd->rlimits.core_size = i64;
-
-	i64 = 8192;
-	supervisor_limit_get(SUPERV_LIMIT_THREAD_STACK, &i64);
-	sd->rlimits.stack_size = i64;
-
-	i64 = 32768;
-	supervisor_limit_get(SUPERV_LIMIT_MAX_FILES, &i64);
-	sd->rlimits.nb_files = i64;
+	sd->rlimits.core_size = -1;
+	sd->rlimits.stack_size = 8192;
+	sd->rlimits.nb_files = 32768;
 	
 	/*ring insertion*/
 	sd->next = SRV_BEACON.next;
@@ -770,10 +776,10 @@ supervisor_children_set_limit(const gchar *key, enum supervisor_limit_e what, gi
 		case SUPERV_LIMIT_MAX_FILES:
 			sd->rlimits.nb_files = value;
 			return 0;
-		default:
-			errno = EINVAL;
-			return -1;
 	}
+
+	errno = EINVAL;
+	return -1;
 }
 
 int
