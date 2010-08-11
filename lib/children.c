@@ -50,6 +50,11 @@
  */
 #define MASK_NEVER_BROKEN 0x20
 
+/**
+ * Tells if the child should be immediately restarted or not
+ */
+#define MASK_DELAYED      0x40
+
 #define FLAG_SET(sd,M) do { sd->flags |= (M); } while (0)
 #define FLAG_DEL(sd,M) do { sd->flags &= ~(M); } while (0)
 #define FLAG_HAS(sd,M) (sd->flags & (M))
@@ -109,6 +114,57 @@ supervisor_get_child(const gchar *key)
 }
 
 static void
+_child_reset_deaths(struct child_s *sd)
+{
+	sd->deaths.t4 = 0L;
+	sd->deaths.t3 = 0L;
+	sd->deaths.t2 = 0L;
+	sd->deaths.t1 = 0L;
+}
+
+static int
+_child_set_flag(struct child_s *sd, guint32 mask, gboolean enabled)
+{
+	errno = 0;
+	if (enabled) {
+
+		if (mask & MASK_STARTED)
+			_child_reset_deaths(sd);
+
+		if (FLAG_HAS(sd,mask))
+			return 0;
+		FLAG_SET(sd,mask);
+		return 1;
+	}
+
+	if (!FLAG_HAS(sd,mask))
+		return 0;
+	FLAG_DEL(sd,mask);
+	return 1;
+}
+
+static int
+supervisor_children_set_flag(const char *key, guint32 mask, gboolean enabled)
+{
+	struct child_s *sd;
+
+	if (!key) {
+		errno = EINVAL;
+		return -1;
+	}
+	if (!(sd = supervisor_get_child(key))) {
+		errno = ENOENT;
+		return -1;
+	}
+	if (FLAG_HAS(sd,MASK_OBSOLETE)) {
+		errno = ENOENT;
+		return -1;
+	}
+
+	return _child_set_flag(sd, mask, enabled);
+}
+
+static void
 _child_get_info(struct child_s *c, struct child_info_s *ci)
 {
 	memset(ci, 0x00, sizeof(*ci));
@@ -116,7 +172,7 @@ _child_get_info(struct child_s *c, struct child_info_s *ci)
 	ci->cmd = c->command;
 	ci->enabled = !FLAG_HAS(c,MASK_DISABLED);
 	ci->respawn = FLAG_HAS(c,MASK_RESPAWN);
-	ci->broken = !FLAG_HAS(c,MASK_NEVER_BROKEN) && FLAG_HAS(c,MASK_BROKEN);
+	ci->broken = FLAG_HAS(c,MASK_BROKEN);
 	ci->breakable = !FLAG_HAS(c,MASK_NEVER_BROKEN);
 	ci->user_flags = c->user_flags;
 	ci->pid = c->pid;
@@ -352,7 +408,6 @@ _child_start(struct child_s *sd, void *udata, supervisor_cb_f cb)
 		return 0;/*makes everybody happy*/
 
 	default: /*father*/
-		FLAG_SET(sd,MASK_STARTED);
 		FLAG_DEL(sd,MASK_BROKEN);
 		sd->counter_started ++;
 		errsav = errno;
@@ -360,6 +415,20 @@ _child_start(struct child_s *sd, void *udata, supervisor_cb_f cb)
 		errno = errsav;
 		return 0;
 	}
+}
+
+static void
+_child_stop(struct child_s *sd)
+{
+	time_t now;
+	register int allow_sigkill;
+
+	now = time(0);
+	allow_sigkill = FALSE;
+	if (sd->last_kill_attempt)
+		allow_sigkill = (now - sd->last_kill_attempt) > SUPERVISOR_DEFAULT_TIMEOUT_KILL;
+	kill(sd->pid, (allow_sigkill ? SIGKILL : SIGTERM));
+	sd->last_kill_attempt = now;
 }
 
 static void
@@ -379,6 +448,62 @@ _child_notify_death(struct child_s *sd)
 		if ((sd->deaths.t0 - sd->deaths.t4) < 60L)
 			FLAG_SET(sd, MASK_BROKEN);
 	}
+}
+
+static gboolean
+_child_should_be_up(struct child_s *sd)
+{
+	return !(FLAG_HAS(sd,MASK_BROKEN) || FLAG_HAS(sd,MASK_DISABLED) || FLAG_HAS(sd,MASK_OBSOLETE))
+		&& FLAG_HAS(sd,MASK_STARTED);
+}
+
+static void
+_child_debug(struct child_s *sd, const gchar *tag)
+{
+	time_t now = time(0);
+	DEBUG("%s [%s] flags=%04X now=%ld deaths{%ld,%ld,%ld,%ld,%ld}",
+		tag, sd->key, sd->flags, now,
+		now - sd->deaths.t0,
+		now - sd->deaths.t1,
+		now - sd->deaths.t2,
+		now - sd->deaths.t3,
+		now - sd->deaths.t4);
+}
+
+static gboolean
+_child_can_be_restarted(struct child_s *sd)
+{
+	time_t now;
+
+	if (!_child_should_be_up(sd) || !FLAG_HAS(sd,MASK_RESPAWN))
+		return FALSE;
+
+	if (!FLAG_HAS(sd,MASK_DELAYED))	
+		return TRUE;
+
+	/* Variable temporisation */
+	now = time(0);
+
+	_child_debug(sd, "DEAD");
+
+	if (sd->deaths.t4 && (now - sd->deaths.t4)<=16L) {
+		DEBUG("death 4 too close (%ld <= 16L)", (now - sd->deaths.t4));
+		return FALSE;
+	}
+	if (sd->deaths.t3 && (now - sd->deaths.t3)<=8L) {
+		DEBUG("death 3 too close (%ld <= 8L)", (now - sd->deaths.t3));
+		return FALSE;
+	}
+	if (sd->deaths.t2 && (now - sd->deaths.t2)<=4L) {
+		DEBUG("death 2 too close (%ld <= 4L)", (now - sd->deaths.t2));
+		return FALSE;
+	}
+	if (sd->deaths.t1 && (now - sd->deaths.t1)<=2L) {
+		DEBUG("death 1 too close (%ld <= 2L)", (now - sd->deaths.t1));
+		return FALSE;
+	}
+
+	return TRUE;
 }
 
 /* Public API -------------------------------------------------------------- */
@@ -421,13 +546,14 @@ supervisor_children_killall(int sig)
 }
 
 guint
-supervisor_children_startall(void *udata, supervisor_cb_f cb)
+supervisor_children_start_enabled(void *udata, supervisor_cb_f cb)
 {
 	guint count, proc_count;
 	struct child_s *sd;
 
 	count = proc_count = 0U;
 	FOREACH_CHILD(sd) {
+
 		proc_count ++;
 
 		if (sd->pid > 0) {
@@ -435,20 +561,21 @@ supervisor_children_startall(void *udata, supervisor_cb_f cb)
 				_child_notify_death(sd);
 		}
 
-		if (sd->pid <= 0
-			&& !FLAG_HAS(sd,MASK_DISABLED)
-			&& (!FLAG_HAS(sd,MASK_BROKEN) || FLAG_HAS(sd,MASK_NEVER_BROKEN))
-			&& (!FLAG_HAS(sd,MASK_STARTED) || FLAG_HAS(sd,MASK_RESPAWN)))
-		{
-			GError *error_local = NULL;
-			if (0 == _child_start(sd, udata, cb))
-				count ++;
-			if (error_local)
-				g_error_free(error_local);
+		if (sd->pid < 1) {
+			if (_child_can_be_restarted(sd)) {
+				if (0 == _child_start(sd, udata, cb))
+					count ++;
+			}
 		}
 	}
 
 	return count;
+}
+
+guint
+supervisor_children_startall(void *udata, supervisor_cb_f cb)
+{
+	return supervisor_children_start_enabled(udata, cb);
 }
 
 guint
@@ -459,10 +586,28 @@ supervisor_children_mark_obsolete(void)
 
 	count = 0;
 	FOREACH_CHILD(sd) {
-		FLAG_SET(sd,MASK_OBSOLETE);
+		FLAG_SET(sd, MASK_OBSOLETE);
 		count ++;
 	}
 
+	return count;
+}
+
+guint
+supervisor_children_disable_obsolete(void)
+{
+	guint count;
+	struct child_s *sd;
+
+	count = 0U;
+	FOREACH_CHILD(sd) {
+		if (FLAG_HAS(sd,MASK_OBSOLETE)) {
+			FLAG_SET(sd, MASK_DISABLED);
+			FLAG_DEL(sd, MASK_STARTED);
+			count ++;
+		}
+	}
+	
 	return count;
 }
 
@@ -477,11 +622,11 @@ supervisor_children_kill_obsolete(void)
 	count = 0U;
 
 	FOREACH_CHILD(sd) {
-		if (sd->pid>1 && FLAG_HAS(sd,MASK_OBSOLETE)) {
-			register int allow_sigkill = now - sd->last_kill_attempt > SUPERVISOR_DEFAULT_TIMEOUT_KILL;
-			kill(sd->pid, (allow_sigkill ? SIGKILL : SIGTERM));
-			sd->last_kill_attempt = now;
-			count ++;
+		if (FLAG_HAS(sd,MASK_OBSOLETE)) {
+			if (sd->pid > 0) {
+				_child_stop(sd);
+				count ++;
+			}
 		}
 	}
 	
@@ -517,7 +662,12 @@ supervisor_children_catharsis(void *udata, supervisor_cb_f cb)
 void
 supervisor_children_stopall(guint max_retries)
 {
+	struct child_s *sd;
 	guint retries;
+
+	FOREACH_CHILD(sd) {
+		FLAG_DEL(sd, MASK_STARTED);
+	}
 
 	for (retries=0; retries<max_retries ;retries++) {
 		if (!supervisor_children_killall(SIGTERM))
@@ -592,13 +742,12 @@ supervisor_children_register(const gchar *key, const gchar *cmd, GError **error)
 	}
 
 	g_strlcpy(sd->key, key, sizeof(sd->key)-1);
-	sd->flags = MASK_RESPAWN;
+	sd->flags = MASK_RESPAWN|MASK_DELAYED;
 	sd->working_directory = g_get_current_dir();
 	sd->command = g_strdup(cmd);
 	sd->pid = -1;
 	sd->uid = getuid();
 	sd->gid = getgid();
-	
 
 	/* set the system limits */
 	sd->rlimits.core_size = -1;
@@ -624,6 +773,8 @@ supervisor_run_services(void *udata, supervisor_cb_f callback)
 	}
 
 	FOREACH_CHILD(sd) {
+		if (FLAG_HAS(sd, MASK_OBSOLETE))
+			continue;
 		_child_get_info(sd, &ci);
 		callback(udata, &ci);
 	}
@@ -642,11 +793,16 @@ supervisor_children_kill_disabled(void)
 	count = 0U;
 
 	FOREACH_CHILD(sd) {
-		if (sd->pid>1 && FLAG_HAS(sd,MASK_DISABLED)) {
-			register int allow_sigkill = now - sd->last_kill_attempt > SUPERVISOR_DEFAULT_TIMEOUT_KILL;
-			kill(sd->pid, (allow_sigkill ? SIGKILL : SIGTERM));
-			sd->last_kill_attempt = now;
-			count ++;
+		if (!_child_should_be_up(sd))
+			FLAG_DEL(sd,MASK_STARTED);
+	}
+
+	FOREACH_CHILD(sd) {
+		if (!FLAG_HAS(sd,MASK_STARTED)) {
+			if (sd->pid > 0) {
+				_child_stop(sd);
+				count ++;
+			}
 		}
 	}
 	
@@ -666,68 +822,41 @@ supervisor_children_enable(const char *key, gboolean enable)
 		errno = ENOENT;
 		return -1;
 	}
-
-	errno = 0;
-	if (!enable) {
-		if (FLAG_HAS(sd,MASK_DISABLED))
-			return 0;
-		FLAG_SET(sd,MASK_DISABLED); 
-		return 1;
+	if (FLAG_HAS(sd,MASK_OBSOLETE)) {
+		errno = ENOENT;
+		return -1;
 	}
 
-	if (!FLAG_HAS(sd,MASK_DISABLED))
-		return 0;
-	FLAG_DEL(sd,MASK_DISABLED); 
-	return 1;
+	/* If a processus is enabled and if it is hes never been started,
+	 * We ask to start it the next turn */
+	if (enable && !sd->last_start_attempt)
+		_child_set_flag(sd, MASK_STARTED, enable);
+
+	return _child_set_flag(sd, MASK_DISABLED, !enable);
+}
+
+int
+supervisor_children_set_delay(const char *key, gboolean enabled)
+{
+	return supervisor_children_set_flag(key, MASK_DELAYED, enabled);
 }
 
 int
 supervisor_children_set_respawn(const char *key, gboolean enabled)
 {
-	struct child_s *sd;
-
-	if (!key) {
-		errno = EINVAL;
-		return -1;
-	}
-	if (!(sd = supervisor_get_child(key))) {
-		errno = ENOENT;
-		return -1;
-	}
-
-	errno = 0;
-	if (enabled) {
-		if (FLAG_HAS(sd,MASK_RESPAWN))
-			return 0;
-		FLAG_SET(sd,MASK_RESPAWN);
-		return 1;
-	}
-
-	if (!FLAG_HAS(sd,MASK_RESPAWN))
-		return 0;
-	FLAG_DEL(sd,MASK_RESPAWN);
-	return 1;
+	return supervisor_children_set_flag(key, MASK_RESPAWN, enabled);
 }
 
 int
 supervisor_children_repair(const char *key)
 {
-	struct child_s *sd;
+	return supervisor_children_set_flag(key, MASK_BROKEN, FALSE);
+}
 
-	if (!key) {
-		errno = EINVAL;
-		return -1;
-	}
-	if (!(sd = supervisor_get_child(key))) {
-		errno = ENOENT;
-		return -1;
-	}
-
-	errno = 0;
-	if (!FLAG_HAS(sd, MASK_BROKEN))
-		return 0;
-	FLAG_DEL(sd, MASK_BROKEN);
-	return 1;
+int
+supervisor_children_status(const char *key, gboolean to_be_started)
+{
+	return supervisor_children_set_flag(key, MASK_STARTED, to_be_started);
 }
 
 int
@@ -746,6 +875,8 @@ supervisor_children_repair_all(void)
 	errno = 0;
 	return count;
 }
+
+/* ------------------------------------------------------------------------- */
 
 int
 supervisor_children_set_limit(const gchar *key, enum supervisor_limit_e what, gint64 value)

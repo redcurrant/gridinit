@@ -77,6 +77,31 @@ static void servers_ensure(void);
 
 #define USERFLAG_ONDIE_EXIT                                          0x00000001
 
+/* ------------------------------------------------------------------------- */
+
+static struct event timer_event;
+
+static void timer_event_arm(gboolean first);
+static void timer_event_cb(int i, short s, void *p);
+
+static void
+timer_event_cb(int i, short s, void *p)
+{
+	(void)i;
+	(void)s;
+	(void)p;
+	timer_event_arm(FALSE);
+}
+
+static void
+timer_event_arm(gboolean first)
+{
+	struct timeval tv;
+	if (first)
+		evtimer_set(&timer_event, timer_event_cb, NULL);
+	tv.tv_sec = tv.tv_usec = 1L;
+	evtimer_add(&timer_event, &tv);
+}
 
 /* Process management helpers ---------------------------------------------- */
 
@@ -150,32 +175,31 @@ command_check(struct bufferevent *bevent, int argc, char **argv)
 static int
 command_start(struct bufferevent *bevent, int argc, char **args)
 {
-	guint count_ok = 0, count_ko = 0;
-
+	guint count = 0;
 	void start_process(const char *proc_name) {
-		DEBUG("start: Starting [%s]", proc_name);
-		switch (supervisor_children_enable(proc_name, TRUE)) {
+
+		DEBUG("Repairing and Starting [%s]", proc_name);
+
+		supervisor_children_repair(proc_name);
+		
+		switch (supervisor_children_status(proc_name, TRUE)) {
 		case -1:
-			count_ko++;
+			NOTICE("Cannot start [%s] : %s", proc_name, strerror(errno));
 			__reply_sprintf(bevent, "notfound: %s\n", proc_name);
 			return;
 		case 0:
-			count_ok++;
-			if (0 < supervisor_children_repair(proc_name))
-				__reply_sprintf(bevent, "repaired: %s\n", proc_name);
-			else
-				__reply_sprintf(bevent, "already: %s\n", proc_name);
+			count ++;
+			NOTICE("Already started [%s] : %s", proc_name, strerror(errno));
+			__reply_sprintf(bevent, "already: %s\n", proc_name);
 			return;
 		case 1:
-			count_ok++;
-			if (0 < supervisor_children_repair(proc_name))
-				__reply_sprintf(bevent, "repaired: %s\n", proc_name);
-			else
-				__reply_sprintf(bevent, "enabled: %s\n", proc_name);
+			count ++;
+			NOTICE("Started [%s] : %s", proc_name, strerror(errno));
+			__reply_sprintf(bevent, "enabled: %s\n", proc_name);
 			return;
 		default:
-			count_ko++;
-			__reply_sprintf(bevent, "internal error: %s\n", proc_name);
+			NOTICE("Cannot start [%s] : %s", proc_name, strerror(errno));
+			__reply_sprintf(bevent, "error: %s (%s)\n", proc_name, strerror(errno));
 			return;
 		}
 	}
@@ -208,43 +232,30 @@ command_start(struct bufferevent *bevent, int argc, char **args)
 		}
 	}
 	
-	if (count_ok) {
-		if (count_ko)
-			__reply_sprintf(bevent, "No process started, there were %u errors\n",
-					count_ko);
-		else {
-			guint count = supervisor_children_startall(NULL, alert_proc_started);
-			__reply_sprintf(bevent, "Started %u processes\n", count);
-		}
-	}
-
-	__reply_sprintf(bevent, "result: ok=%u ko=%u\n", count_ok, count_ko);
-	REPLY_STR_CONTANT(bevent, "\n");
+	__reply_sprintf(bevent, "Done! (%u services matched)\n", count);
 	return 0;
 }
 
 static int 
 command_stop(struct bufferevent *bevent, int argc, char **args)
 {
-	guint count_ok = 0, count_ko = 0;
-
+	guint count = 0;
 	void stop_process(const char *proc_name) {
-		switch (supervisor_children_enable(proc_name, FALSE)) {
+		INFO("Stopping process keyed [%s]", proc_name);
+		switch (supervisor_children_status(proc_name, FALSE)) {
 		case -1:
-			count_ko++;
 			__reply_sprintf(bevent, "notfound: %s\n", proc_name);
 			return;
 		case 0:
-			count_ok++;
+			count ++;
 			__reply_sprintf(bevent, "already: %s\n", proc_name);
 			return;
 		case 1:
-			count_ok++;
-			__reply_sprintf(bevent, "disabled: %s\n", proc_name);
+			count ++;
+			__reply_sprintf(bevent, "stopped: %s\n", proc_name);
 			return;
 		default:
-			count_ko++;
-			__reply_sprintf(bevent, "internal error: %s\n", proc_name);
+			__reply_sprintf(bevent, "error: %s (%s)\n", proc_name, strerror(errno));
 			return;
 		}
 	}
@@ -265,24 +276,13 @@ command_stop(struct bufferevent *bevent, int argc, char **args)
 		for (i=1; i<argc ;i++) {
 			char *what = args[i];
 			if (*what == '@')
-				supervisor_run_services(what, child_stopper);
+				supervisor_run_services(what+1, child_stopper);
 			else
 				stop_process(what);
 		}
 	}
 
-	if (count_ok) {
-		if (count_ko)
-			__reply_sprintf(bevent, "No process killed, there were %u errors\n",
-					count_ko);
-		else {
-			guint count = supervisor_children_kill_disabled();
-			__reply_sprintf(bevent, "killed %u processes\n", count);
-		}
-	}
-	
-	__reply_sprintf(bevent, "result: ok=%u ko=%u\n", count_ok, count_ko);
-	REPLY_STR_CONTANT(bevent, "\n");
+	__reply_sprintf(bevent, "Done! (%u services matched)\n", count);
 	return 0;
 }
 
@@ -381,22 +381,10 @@ command_reload(struct bufferevent *bevent, int argc, char **argv)
 	if (!_cfg_reload(TRUE, &error_local)) {
 		__reply_sprintf(bevent, "error: Failed to reload the configuration from [%s]\n", config_path);
 		__reply_sprintf(bevent, "cause: %s\n", error_local ? error_local->message : "NULL");
-
-		REPLY_STR_CONTANT(bevent, "Failed!\n\n");
 	}
 	else {
-		__reply_sprintf(bevent, "Services refreshed\n");
-
-		count = supervisor_children_kill_obsolete();
-		__reply_sprintf(bevent, "Killed %u obsolete services\n", count);
-
-		count = supervisor_children_kill_disabled();
-		__reply_sprintf(bevent, "Killed %u disabled services\n", count);
-
-		count = supervisor_children_startall(NULL, alert_proc_started);
-		__reply_sprintf(bevent, "Started %u new processes\n", count);
-
-		REPLY_STR_CONTANT(bevent, "Done!\n\n");
+		count = supervisor_children_disable_obsolete();
+		__reply_sprintf(bevent, "Services refreshed, %u disabled\n", count);
 	}
 	return 0;
 }
@@ -481,6 +469,7 @@ supervisor_signal_handler(int s, short flags, void *udata)
 		flag_running = 0;
 		return;
 	case SIGCHLD:
+	case SIGALRM:
 		flag_catharsis = ~0;
 		return;
 	}
@@ -1371,7 +1360,9 @@ _cfg_reload_file(GKeyFile *kf, gboolean services_only, GError **err)
 	}
 
 	for (p_group=groups; *p_group ;p_group++) {
-		TRACE("Reading sectiob");
+
+		TRACE("Reading section [%s]", *p_group);
+
 		if (g_str_has_prefix(*p_group, "service.")
 				 || g_str_has_prefix(*p_group, "Service.")) {
 			INFO("reconfigure : managing service section [%s]", *p_group);
@@ -1597,6 +1588,7 @@ main(int argc, char ** args)
 	signals_manage(SIGTERM);
 	signals_manage(SIGABRT);
 	signals_manage(SIGINT);
+	signals_manage(SIGALRM);
 	signals_manage(SIGQUIT);
 	signals_manage(SIGUSR1);
 	signals_manage(SIGUSR2);
@@ -1605,6 +1597,8 @@ main(int argc, char ** args)
 		ERROR("Failed to monitor the server sockets");
 		goto label_exit;
 	}
+
+	timer_event_arm(TRUE);
 	
 	DEBUG("Starting the event loop!");
 	do { /* main loop */
@@ -1617,26 +1611,28 @@ main(int argc, char ** args)
 		while (flag_running) {
 			
 			/* Manage the events that occured */
-			if (flag_catharsis) {
-				proc_count = supervisor_children_catharsis(NULL, alert_proc_died);
-				if (proc_count) {
-					DEBUG("Recycled %u processes", proc_count);
-					if (!flag_running)
-						break;
-					proc_count = supervisor_children_startall(NULL, alert_proc_started);
-					DEBUG("Started %u processes", proc_count);
-				}
-				else {
-					WARN("Recycled no process");
-				}
-				flag_catharsis = 0;
-				if (!flag_running)
-					break;
-			}
+			flag_catharsis = 0;
+			proc_count = supervisor_children_catharsis(NULL, alert_proc_died);
+			if (proc_count)
+				INFO("Recycled %u processes", proc_count);
+
+			proc_count = supervisor_children_kill_disabled();
+			if (proc_count)
+				INFO("Killed %u disabled/stopped services", proc_count);
+
+			if (!flag_running)
+				break;
+
+			proc_count = supervisor_children_start_enabled(NULL, alert_proc_started);
+			if (proc_count)
+				INFO("Started %u enabled services", proc_count);
 
 			if (flag_check_socket)
 				servers_ensure();
 			
+			/* Be sure to wake */
+			alarm(1);
+
 			/* Manages the connections pool */
 			if (0 > event_loop(EVLOOP_ONCE)) {
 				ERROR("event_loop() error : %s", strerror(errno));
@@ -1651,12 +1647,13 @@ label_exit:
 	/* stop all the processes */
 	DEBUG("Stopping all the children");
 	(void) supervisor_children_stopall(4);
-	(void) supervisor_children_catharsis(NULL, alert_proc_died);
 
 	/* clean the working structures */
 	DEBUG("Cleaning the working structures");
 	if (libevents_handle)
 		event_base_free(libevents_handle);
+
+	(void) supervisor_children_catharsis(NULL, alert_proc_died);
 	supervisor_children_cleanall();
 	servers_clean();
 	signals_clean();
