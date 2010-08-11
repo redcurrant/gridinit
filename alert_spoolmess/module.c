@@ -7,11 +7,16 @@
 #include <stdlib.h>
 #include <strings.h>
 #include <unistd.h>
+
 #include <glib.h>
+
+#include <metautils.h>
+
 #include "../main/gridinit_alerts.h"
+
 #define DEFAULT_SOPCODE "MUT-GRD-7000"
 
-static char SOPCODE[sizeof(DEFAULT_SOPCODE)] = DEFAULT_SOPCODE;
+static char SOPCODE[sizeof(DEFAULT_SOPCODE)+1] = DEFAULT_SOPCODE;
 static char CODE_CLIENT[64] = "";
 static char CODE_OBJET[64] = "";
 
@@ -59,8 +64,8 @@ gridinit_spoolmess_handle(void *udata, int event, const char *msg)
 			"[~BCO]%.*s[~ECO]", (_s = sizeof(CODE_OBJET)), CODE_OBJET);
 
 	if (offset < sizeof(working_message)) {
-		offset += g_snprintf(working_message+offset, sizeof(working_message)-offset, "%s",
-			(*msg ? msg : default_msg));
+		offset += g_snprintf(working_message+offset, sizeof(working_message)-offset,
+			"%s", (*msg ? msg : default_msg));
 	}
 	
 	spoolmess(SOPCODE, criticity, working_message);
@@ -94,6 +99,10 @@ gridinit_spoolmess_init(void *udata, GHashTable *params)
 		bzero(CODE_OBJET, sizeof(CODE_OBJET));
 		g_strlcpy(CODE_OBJET, str, sizeof(CODE_OBJET)-1);
 	}
+
+	NOTICE("SOPCODE = [%s]", SOPCODE);
+	NOTICE("CODE_CLIENT = [%s]", CODE_CLIENT);
+	NOTICE("CODE_OBJET = [%s]", CODE_OBJET);
 }
 
 static void
