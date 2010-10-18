@@ -23,6 +23,8 @@
 #define MINI 0
 #define MEDIUM 1
 
+static gboolean flag_help = FALSE;
+
 static gchar sock_path[1024];
 static gchar line[65536];
 
@@ -157,22 +159,42 @@ dump_as_is(FILE *in_stream, void *udata)
 	}
 }
 
+struct dump_status_arg_s {
+	int how;
+	int argc;
+	char **args;
+};
+
 static void
 dump_status(FILE *in_stream, void *udata)
 {
 	char fmt_title[256], fmt_line[256];
 	size_t maxkey, maxgroup;
-	int how;
+	struct dump_status_arg_s *status_args;
 	GList *all_jobs = NULL, *l;
 
-	how = *(int*)udata;
+	gboolean matches(struct child_info_s *ci, int argc, gchar **args) {
+		int i;
+		gchar *s;
+		if (!*args)
+			return TRUE;
+		for (i=0; i<argc && (s=args[i]) ;i++) {
+			if (s[0]=='@' && !g_ascii_strcasecmp(ci->group, s+1))
+				return TRUE;
+			if (s[0]!='@' && !g_ascii_strcasecmp(ci->key, s))
+				return TRUE;
+		}
+		return FALSE;
+	}
+
+	status_args = udata;
 	all_jobs = read_services_list(in_stream);
 
 	maxkey = get_longest_key(all_jobs);
 	maxgroup = get_longest_group(all_jobs);
 
 	/* write the title line */
-	switch (how) {
+	switch (status_args->how) {
 	case MINI:
 		g_snprintf(fmt_title, sizeof(fmt_title),
 				"%%-%us %%8s %%6s %%s\n",
@@ -211,11 +233,17 @@ dump_status(FILE *in_stream, void *udata)
 		struct child_info_s *ci;
 		
 		ci = l->data;
+
+		if (status_args->argc && status_args->args) {
+			if (!matches(ci, status_args->argc, status_args->args))
+				continue;
+		}
+
 		if (ci->pid >= 0)
 			strftime(str_time, sizeof(str_time), "%Y-%m-%d %H:%M:%S",
 				gmtime(&(ci->last_start_attempt)));
 
-		switch (how) {
+		switch (status_args->how) {
 		case MINI:
 			fprintf(stdout, fmt_line, ci->key, get_child_status(ci), ci->pid, ci->group);
 			break;
@@ -307,45 +335,40 @@ send_commandv(void (*dumper)(FILE *, void*), void *udata, int argc, char **args)
 }
 
 static int
-command_status(int argc, char **args)
+command_status(int lvl, int argc, char **args)
 {
-	gchar **real_args = NULL;
-	int i, count_args, how;
+	struct dump_status_arg_s status_args;
+	gchar *real_args[] = {"status",NULL};
 
-	how = MINI; /*minimal output by default*/
-	count_args = 1;
-	real_args = calloc(count_args+1, sizeof(char*));
-	real_args[0] = args[0];
-	
-	for (i=1; i<argc ;i++) {/* parse options until a '--' is met */
-		char *arg = args[i];
-		if (0 == g_ascii_strcasecmp(arg, "--full")) 
-			how = MEDIUM + 1;
-		else if (0 == g_ascii_strcasecmp(arg, "--medium")) 
-			how = MEDIUM;
-		else if (0 == g_ascii_strcasecmp(arg, "--minimal")) 
-			how = MINI;
-		else if (0 == g_ascii_strcasecmp(arg, "--"))
-			break;
-		else if (g_str_has_prefix(arg, "--"))
-			g_error("Unexpected status option : [%s]", arg);
-		else {	
-			real_args[count_args++] = arg;
-			real_args = realloc(realloc, count_args+1);
-			real_args[count_args] = NULL;
-		}
+	switch (lvl) {
+		case 0:  status_args.how = MINI; break;
+		case 1:  status_args.how = MEDIUM; break;
+		default: status_args.how = MEDIUM+1; break;
 	}
-	for (; i<argc ;i++) {/* everything after the '--' are arguments */
-		real_args[count_args++] = args[i];
-		real_args = realloc(realloc, count_args+1);
-		real_args[count_args] = NULL;
-	}
-	
-	send_commandv(dump_status, &how, count_args, real_args);
-	free(real_args);
+	status_args.argc = argc-1;
+	status_args.args = args+1;
+
+	send_commandv(dump_status, &status_args, 1, real_args);
 	return 1;
 }
 
+static int
+command_status0(int argc, char **args)
+{
+	return command_status(0, argc, args);
+}
+
+static int
+command_status1(int argc, char **args)
+{
+	return command_status(1, argc, args);
+}
+
+static int
+command_status2(int argc, char **args)
+{
+	return command_status(2, argc, args);
+}
 
 static int
 command_start(int argc, char **args)
@@ -387,9 +410,11 @@ struct command_s {
 };
 
 static struct command_s COMMANDS[] = {
+	{ "status",   command_status0 },
+	{ "status2",  command_status1 },
+	{ "status3",  command_status2 },
 	{ "start",   command_start  },
 	{ "stop",    command_stop   },
-	{ "status",  command_status },
 	{ "reload",  command_reload },
 	{ "repair",  command_repair },
 	{ NULL, NULL }
@@ -405,16 +430,38 @@ main_options(int argc, char **args)
 	g_strlcpy(sock_path, GRIDINIT_SOCK_PATH, sizeof(sock_path)-1);
 
 	/*  */
-	while ((opt = getopt(argc, args, "c:")) != -1) {
+	while ((opt = getopt(argc, args, "hc:")) != -1) {
 		switch (opt) {
 			case 'c':
 				bzero(sock_path, sizeof(sock_path));
 				g_strlcpy(sock_path, optarg, sizeof(sock_path)-1);
 				break;
+			case 'h':
+				flag_help = TRUE;
+				break;
 		}
 	}
 
 	return optind;
+}
+
+static void
+help(char **args)
+{
+	close(2);
+	g_print("Usage: %s [status{,2,3}|start|stop|reload|repair] [ID...]\n", args[0]);
+	g_print("  status* : Displays the status of the given processes or groups\n");
+	g_print("  start   : Starts the given processes or groups, even if broken\n");
+	g_print("  stop    : Stops the given processes or groups, they won't be automatically\n");
+	g_print("            restarted even after a configuration reload\n");
+	g_print("  reload  : reloads the configuration, stopping obsolete processes, starting\n");
+	g_print("            the newly discovered. Broken or stopped processes are not restarted\n");
+	g_print("  repair  : removes the broken flag set on a process. Start must be called to\n");
+	g_print("            restart the process.\n");
+	g_print("with ID the key of a process, or '@GROUP', with GROUP the name of a process\n");
+	g_print("group\n");
+	close(1);
+	exit(0);
 }
 
 int
@@ -426,11 +473,10 @@ main(int argc, char ** args)
 	close(0);
 	opt_index = main_options(argc, args);
 
-	if (opt_index >= argc) {
-		char *fake_args[] = {"status", NULL };
-		command_status(1, fake_args);
-		return 0;
-	}
+	if (flag_help)
+		help(args);
+	if (opt_index >= argc)
+		help(args);
 	
 	for (cmd=COMMANDS; cmd->name ;cmd++) {
 		if (0 == g_ascii_strcasecmp(cmd->name, args[opt_index])) {
