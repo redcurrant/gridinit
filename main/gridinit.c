@@ -1285,7 +1285,7 @@ _cfg_section_default(GKeyFile *kf, const gchar *section, GError **err)
 			if (!g_file_test(*p_key, G_FILE_TEST_IS_DIR|G_FILE_TEST_IS_EXECUTABLE))
 				WARN("Default working directory does not exist yet [%s]", *p_key);
 			bzero(default_working_directory, sizeof(default_working_directory));
-			g_strlcpy(default_working_directory, *p_key, sizeof(default_working_directory)-1);
+			g_strlcpy(default_working_directory, str, sizeof(default_working_directory)-1);
 		}
 		else if (!g_ascii_strcasecmp(*p_key, CFG_KEY_LIMIT_NBFILES)) {
 			limit_nb_files = atol(str);
@@ -1300,7 +1300,7 @@ _cfg_section_default(GKeyFile *kf, const gchar *section, GError **err)
 		else if (!g_ascii_strcasecmp(*p_key, CFG_KEY_LISTEN)) {
 			if (str[0] == '/') {
 				bzero(sock_path, sizeof(sock_path));
-				g_strlcpy(sock_path, str, sizeof(sock_path));
+				g_strlcpy(sock_path, str, sizeof(sock_path)-1);
 			}
 			else {
 				g_printerr("section=%s, key=listen : not a UNIX path, ignored! [%s]\n",
