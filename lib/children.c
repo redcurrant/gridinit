@@ -382,10 +382,12 @@ _child_start(struct child_s *sd, void *udata, supervisor_cb_f cb)
 		}
 
 		if (sd->working_directory) {
-			if (-1 == chdir(sd->working_directory))
+			if (-1 == chdir(sd->working_directory)) {
+				gchar *str_cwd = g_get_current_dir();
 				WARN("chdir(%s) failed (%s), currently in [%s]",
-					sd->working_directory, strerror(errno),
-					g_get_current_dir());
+					sd->working_directory, strerror(errno), str_cwd);
+				g_free(str_cwd);
+			}
 		}
 
 		env = _child_build_env(sd);
