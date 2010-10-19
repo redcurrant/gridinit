@@ -1263,9 +1263,9 @@ static gboolean
 _cfg_section_default(GKeyFile *kf, const gchar *section, GError **err)
 {
 	gchar buf_user[256]="", buf_group[256]="", buf_includes[1024]="";
-	long limit_thread_stack = 1024;
-	long limit_core_size = -1;
-	long limit_nb_files = 8192;
+	gint64 limit_thread_stack = 1024;
+	gint64 limit_core_size = -1;
+	gint64 limit_nb_files = 8192;
 	gchar **p_key, **keys;
 
 	keys = g_key_file_get_keys(kf, section, NULL, err);
@@ -1279,7 +1279,7 @@ _cfg_section_default(GKeyFile *kf, const gchar *section, GError **err)
 		str = g_key_file_get_string(kf, section, *p_key, NULL);
 
 		if (!g_ascii_strcasecmp(*p_key, CFG_KEY_LIMIT_CORESIZE)) {
-			limit_core_size = atol(str);
+			limit_core_size = g_ascii_strtoll(str, NULL, 10);
 		}
 		else if (!g_ascii_strcasecmp(*p_key, CFG_KEY_PATH_WORKINGDIR)) {
 			if (!g_file_test(*p_key, G_FILE_TEST_IS_DIR|G_FILE_TEST_IS_EXECUTABLE))
@@ -1288,10 +1288,10 @@ _cfg_section_default(GKeyFile *kf, const gchar *section, GError **err)
 			g_strlcpy(default_working_directory, str, sizeof(default_working_directory)-1);
 		}
 		else if (!g_ascii_strcasecmp(*p_key, CFG_KEY_LIMIT_NBFILES)) {
-			limit_nb_files = atol(str);
+			limit_nb_files = g_ascii_strtoll(str, NULL, 10);
 		}
 		else if (!g_ascii_strcasecmp(*p_key, CFG_KEY_LIMIT_STACKSIZE)) {
-			limit_thread_stack = atol(str);
+			limit_thread_stack = g_ascii_strtoll(str, NULL, 10);
 		}
 		else if (!g_ascii_strcasecmp(*p_key, CFG_KEY_PATH_PIDFILE)) {
 			bzero(pidfile_path, sizeof(pidfile_path));
@@ -1324,6 +1324,10 @@ _cfg_section_default(GKeyFile *kf, const gchar *section, GError **err)
 	}
 	g_strfreev(keys);
 
+	(void) supervisor_limit_set(SUPERV_LIMIT_CORE_SIZE, limit_core_size * 1024 * 1024);
+	(void) supervisor_limit_set(SUPERV_LIMIT_MAX_FILES, limit_nb_files);
+	(void) supervisor_limit_set(SUPERV_LIMIT_THREAD_STACK, limit_thread_stack * 1024);
+
 #if 0
 	GError *error_local = NULL;
 	if (!supervisor_rights_init(buf_user, buf_group, &error_local)) {
@@ -1332,10 +1336,6 @@ _cfg_section_default(GKeyFile *kf, const gchar *section, GError **err)
 	if (error_local)
 		g_clear_error(&error_local);
 #endif
-
-	(void) supervisor_limit_set(SUPERV_LIMIT_CORE_SIZE, limit_core_size * 1024 * 1024);
-	(void) supervisor_limit_set(SUPERV_LIMIT_MAX_FILES, limit_nb_files);
-	(void) supervisor_limit_set(SUPERV_LIMIT_THREAD_STACK, limit_thread_stack * 1024);
 
 	if (*buf_includes) {
 		if (config_subdir)

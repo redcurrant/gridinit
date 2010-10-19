@@ -15,28 +15,6 @@
 #include <sys/resource.h>
 #include <unistd.h>
 
-#if 0
-static rlim_t
-limit_min(rlim_t r1, rlim_t r2)
-{
-	if (r2 == RLIM_INFINITY)
-		return r1;
-	if (r1 == RLIM_INFINITY)
-		return r2;
-	return MIN(r1,r2);
-}
-
-static rlim_t
-limit_max(rlim_t r1, rlim_t r2)
-{
-	if (r2 == RLIM_INFINITY)
-		return r2;
-	if (r1 == RLIM_INFINITY)
-		return r1;
-	return MAX(r1,r2);
-}
-#endif
-
 static const char*
 get_rlimit_name(enum supervisor_limit_e what)
 {
@@ -82,10 +60,30 @@ static rlim_t
 get_rlim_from_i64(gint64 i64)
 {
 	rlim_t res;
-	if (i64 == RLIM_INFINITY || i64 < 0)
+
+	if (i64 >= G_MAXLONG)
 		return RLIM_INFINITY;
-	return (res = i64);
+	if (i64 < 0)
+		return -1;
+
+	res = i64;
+	return res;
 }
+
+static gint64
+get_i64_from_rlim(rlim_t l)
+{
+	gint64 i64;
+
+	if (l == RLIM_INFINITY)
+		return G_MAXINT64;
+	if (l < 0)
+		return -1;
+
+	i64 = l;
+	return i64;
+}
+
 
 int
 supervisor_limit_set(enum supervisor_limit_e what, gint64 value)
@@ -140,7 +138,7 @@ supervisor_limit_get(enum supervisor_limit_e what, gint64 *value)
 	if (-1 == getrlimit(res_id, &rl))
 		return -1;
 
-	*value = (rl.rlim_cur == RLIM_INFINITY) ? 1 : rl.rlim_cur;
+	*value = get_i64_from_rlim(rl.rlim_cur);
 	return 0;
 }
 

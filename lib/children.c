@@ -62,9 +62,9 @@
 #define FOREACH_CHILD(sd) for (sd=SRV_BEACON.next; sd && sd!=&SRV_BEACON ;sd=sd->next)
 
 struct my_rlimits_s {
-	long core_size;
-	long stack_size;
-	long nb_files;
+	gint64 core_size;
+	gint64 stack_size;
+	gint64 nb_files;
 };
 
 struct child_s {
@@ -167,6 +167,16 @@ supervisor_children_set_flag(const char *key, guint32 mask, gboolean enabled)
 static void
 _child_get_info(struct child_s *c, struct child_info_s *ci)
 {
+	long i64tolong(gint64 i64) {
+		long l;
+		if (i64 >= G_MAXLONG)
+			return G_MAXLONG;
+		if (i64 < 0)
+			return -1L;
+		l = i64;
+		return l;
+	}
+
 	memset(ci, 0x00, sizeof(*ci));
 	ci->key = c->key;
 	ci->cmd = c->command;
@@ -183,9 +193,9 @@ _child_get_info(struct child_s *c, struct child_info_s *ci)
 	ci->last_start_attempt = c->last_start_attempt;
 	ci->last_kill_attempt = c->last_kill_attempt;
 
-	ci->rlimits.core_size = c->rlimits.core_size;
-	ci->rlimits.stack_size = c->rlimits.stack_size;
-	ci->rlimits.nb_files = c->rlimits.nb_files;
+	ci->rlimits.core_size = i64tolong(c->rlimits.core_size);
+	ci->rlimits.stack_size = i64tolong(c->rlimits.stack_size);
+	ci->rlimits.nb_files = i64tolong(c->rlimits.nb_files);
 
 	ci->group = c->group;
 }
@@ -227,45 +237,26 @@ _wait_for_dead_child(pid_t *ptr_pid)
 	return 0;
 }
 
-static gint64
-get_limit64(long val)
-{
-	gint64 i64;
-
-	i64 = val;
-	if (val < 0 || val == RLIM_INFINITY)
-		i64 = -1;
-	return i64;
-}
-
 static void
 _child_set_rlimits(struct my_rlimits_s *new_limits, struct my_rlimits_s *save)
 {
-	gint64 i64;
+	save->stack_size = save->nb_files = save->core_size = G_MAXINT64;
 
-	i64 = RLIM_INFINITY;
-	(void) supervisor_limit_get(SUPERV_LIMIT_THREAD_STACK, &i64);
-	save->stack_size = i64;
+	(void) supervisor_limit_get(SUPERV_LIMIT_THREAD_STACK, &(save->stack_size));
+	(void) supervisor_limit_get(SUPERV_LIMIT_MAX_FILES,    &(save->nb_files));
+	(void) supervisor_limit_get(SUPERV_LIMIT_CORE_SIZE,    &(save->core_size));
 
-	i64 = RLIM_INFINITY;
-	(void) supervisor_limit_get(SUPERV_LIMIT_MAX_FILES, &i64);
-	save->nb_files = i64;
-
-	i64 = RLIM_INFINITY;
-	(void) supervisor_limit_get(SUPERV_LIMIT_CORE_SIZE, &i64);
-	save->core_size = i64;
-
-	(void) supervisor_limit_set(SUPERV_LIMIT_THREAD_STACK, get_limit64(new_limits->stack_size));
-	(void) supervisor_limit_set(SUPERV_LIMIT_MAX_FILES,    get_limit64(new_limits->nb_files));
-	(void) supervisor_limit_set(SUPERV_LIMIT_CORE_SIZE,    get_limit64(new_limits->core_size));
+	(void) supervisor_limit_set(SUPERV_LIMIT_THREAD_STACK, new_limits->stack_size);
+	(void) supervisor_limit_set(SUPERV_LIMIT_MAX_FILES,    new_limits->nb_files);
+	(void) supervisor_limit_set(SUPERV_LIMIT_CORE_SIZE,    new_limits->core_size);
 }
 
 static void
 _child_restore_rlimits(struct my_rlimits_s *save)
 {
-	(void) supervisor_limit_set(SUPERV_LIMIT_THREAD_STACK, get_limit64(save->stack_size));
-	(void) supervisor_limit_set(SUPERV_LIMIT_MAX_FILES,    get_limit64(save->nb_files));
-	(void) supervisor_limit_set(SUPERV_LIMIT_CORE_SIZE,    get_limit64(save->core_size));
+	(void) supervisor_limit_set(SUPERV_LIMIT_THREAD_STACK, save->stack_size);
+	(void) supervisor_limit_set(SUPERV_LIMIT_MAX_FILES,    save->nb_files);
+	(void) supervisor_limit_set(SUPERV_LIMIT_CORE_SIZE,    save->core_size);
 }
 
 /**
@@ -349,7 +340,8 @@ _child_start(struct child_s *sd, void *udata, supervisor_cb_f cb)
 	sd->pid = fork();
 	_child_restore_rlimits(&saved_limits);
 
-	INFO("set limits (%ld,%ld,%ld) then restored (%ld,%ld,%ld) (stack,file,core)"
+	INFO("set limits (%"G_GINT64_FORMAT",%"G_GINT64_FORMAT",%"G_GINT64_FORMAT")"
+		" then restored (%"G_GINT64_FORMAT",%"G_GINT64_FORMAT",%"G_GINT64_FORMAT") (stack,file,core)"
 		, sd->rlimits.stack_size, sd->rlimits.nb_files, sd->rlimits.core_size
 		, saved_limits.stack_size, saved_limits.nb_files, saved_limits.core_size);
 
