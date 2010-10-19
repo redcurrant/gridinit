@@ -68,7 +68,9 @@ static volatile int flag_daemon = 0;
 static volatile int flag_running = ~0;
 static volatile int flag_cfg_reload = 0;
 static volatile int flag_check_socket = 0;
-static volatile int flag_catharsis = 0;
+
+static volatile gint32 default_uid = -1;
+static volatile gint32 default_gid = -1;
 
 static gboolean _cfg_reload(gboolean services_only, GError **err);
 
@@ -76,6 +78,7 @@ static void servers_ensure(void);
 
 
 #define USERFLAG_ONDIE_EXIT                                          0x00000001
+#define USERFLAG_ALERT_PENDING                                       0x00000002
 
 /* ------------------------------------------------------------------------- */
 
@@ -108,8 +111,6 @@ timer_event_arm(gboolean first)
 static void
 alert_proc_died(void *udata, struct child_info_s *ci)
 {
-	gchar buff[1024];
-
 	(void) udata;
 
 	/* if the user_flags on the process contain the on_die:exit flag,
@@ -119,14 +120,26 @@ alert_proc_died(void *udata, struct child_info_s *ci)
 		flag_running = FALSE;
 	}
 
+	supervisor_children_set_user_flags(ci->key, ci->user_flags|USERFLAG_ALERT_PENDING);
+}
+
+static void
+alert_send_deferred(void *udata, struct child_info_s *ci)
+{
+	gchar buff[1024];
+
+	(void) udata;
+
+	if (!(ci->user_flags & USERFLAG_ALERT_PENDING))
+		return;
+
+	supervisor_children_set_user_flags(ci->key, ci->user_flags & (~USERFLAG_ALERT_PENDING));
 	if (ci->broken) {
-		g_snprintf(buff, sizeof(buff), "Process broken pid=%d [%s] %s",
-			ci->pid, ci->key, ci->cmd);
+		g_snprintf(buff, sizeof(buff), "Process broken [%s] %s", ci->key, ci->cmd);
 		gridinit_alerting_send(GRIDINIT_EVENT_BROKEN, buff);
 	}
 	else {
-		g_snprintf(buff, sizeof(buff), "Process died pid=%d [%s] %s",
-			ci->pid, ci->key, ci->cmd);
+		g_snprintf(buff, sizeof(buff), "Process died [%s] %s", ci->key, ci->cmd);
 		gridinit_alerting_send(GRIDINIT_EVENT_DIED, buff);
 	}
 }
@@ -469,8 +482,9 @@ supervisor_signal_handler(int s, short flags, void *udata)
 		flag_running = 0;
 		return;
 	case SIGCHLD:
+		(void) supervisor_children_catharsis(NULL, alert_proc_died);
+		return;
 	case SIGALRM:
-		flag_catharsis = ~0;
 		return;
 	}
 }
@@ -1140,6 +1154,13 @@ _cfg_section_service(GKeyFile *kf, const gchar *section, GError **err)
 		}
 	}
 
+	/* By default set the current uid/gid */
+	supervisor_children_set_ids(str_key, getuid(), getgid());
+
+	/* Overwrite this by possibly configured default uid/gid  */
+	if (default_uid>0 && default_gid>0)
+		supervisor_children_set_ids(str_key, default_uid, default_gid);
+
 	/* explicit user/group pair */
 	if (str_uid && str_gid && *str_uid && *str_uid) {
 		gint32 uid, gid;
@@ -1324,19 +1345,32 @@ _cfg_section_default(GKeyFile *kf, const gchar *section, GError **err)
 	}
 	g_strfreev(keys);
 
+	/* Set the defautl limits for the services (apply them directly to the gridinit itself) */
 	(void) supervisor_limit_set(SUPERV_LIMIT_CORE_SIZE, limit_core_size * 1024 * 1024);
 	(void) supervisor_limit_set(SUPERV_LIMIT_MAX_FILES, limit_nb_files);
 	(void) supervisor_limit_set(SUPERV_LIMIT_THREAD_STACK, limit_thread_stack * 1024);
 
-#if 0
-	GError *error_local = NULL;
-	if (!supervisor_rights_init(buf_user, buf_group, &error_local)) {
-		g_printerr("Failed to set privileges : %s\n", error_local->message);
-	}
-	if (error_local)
-		g_clear_error(&error_local);
-#endif
+	/* Loads the default UID/GID for the services*/
+	if (*buf_user && *buf_group) {
+		gint32 uid, gid;
 
+		uid = gid = -1;
+		if (!uid_exists(buf_user, &uid)) {
+			WARN("Invalid default UID [%s] : errno=%d %s", buf_user, errno, strerror(errno));
+			uid = -1;
+		}
+		if (!gid_exists(buf_group, &gid)) {
+			WARN("Invalid default GID [%s] : errno=%d %s", buf_user, errno, strerror(errno));
+			gid = -1;
+		}
+		if (uid>0 && gid>0) {
+			default_uid = uid;
+			default_gid = gid;
+			NOTICE("Default UID/GID set to %"G_GINT32_FORMAT"/%"G_GINT32_FORMAT, default_uid, default_gid);
+		}
+	}
+
+	/* Loads the service files */
 	if (*buf_includes) {
 		if (config_subdir)
 			g_free(config_subdir);
@@ -1610,23 +1644,23 @@ main(int argc, char ** args)
 
 		while (flag_running) {
 			
-			/* Manage the events that occured */
-			flag_catharsis = 0;
-			proc_count = supervisor_children_catharsis(NULL, alert_proc_died);
-			if (proc_count)
-				INFO("Recycled %u processes", proc_count);
+			/* alert for the services that died */
+			supervisor_run_services(NULL, alert_send_deferred);
+			if (!flag_running)
+				break;
 
+			/* some status changed */
 			proc_count = supervisor_children_kill_disabled();
 			if (proc_count)
 				INFO("Killed %u disabled/stopped services", proc_count);
-
 			if (!flag_running)
 				break;
 
 			proc_count = supervisor_children_start_enabled(NULL, alert_proc_started);
 			if (proc_count)
 				INFO("Started %u enabled services", proc_count);
-
+			if (!flag_running)
+				break;
 			if (flag_check_socket)
 				servers_ensure();
 			
