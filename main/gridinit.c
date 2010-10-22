@@ -667,6 +667,8 @@ __event_accept(int fd, short flags, void *udata)
 			WARN("fd=%i Cannot set TCP_NODELAY mode on socket (%s)", fd_client, strerror(errno));
 	}
 
+	evutil_make_socket_closeonexec(fd_client);
+
 	/* Now manage this connection */
 	struct bufferevent *p_bevent =  NULL;
 	p_bevent = bufferevent_new(fd_client, __event_command_in,
@@ -1585,6 +1587,12 @@ main(int argc, char ** args)
 {
 	int rc = 1;
 	struct event_base *libevents_handle = NULL;
+	
+	void postfork(void *udata) {
+		(void) udata;
+		if (libevents_handle)
+			event_reinit(libevents_handle);
+	}
 
 	bzero(sock_path, sizeof(sock_path));
 	bzero(pidfile_path, sizeof(pidfile_path));
@@ -1619,6 +1627,9 @@ main(int argc, char ** args)
 	/* Starts the network and the signal management */
 	DEBUG("Initiating the network and signals management");
 	libevents_handle = event_init();
+
+	supervisor_set_callback_postfork(postfork, NULL);
+
 	signals_manage(SIGTERM);
 	signals_manage(SIGABRT);
 	signals_manage(SIGINT);
