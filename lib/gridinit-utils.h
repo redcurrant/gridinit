@@ -46,10 +46,17 @@ struct child_info_s {
 	const char *group;
 };
 
+typedef void (supervisor_postfork_f) (void *udata);
+
 typedef void (supervisor_cb_f) (void *udata, struct child_info_s *ci);
 
 
 void supervisor_children_init(void);
+
+/**
+ * Sets an optional function that will be used just after the fork
+ */
+void supervisor_set_callback_postfork(supervisor_postfork_f *cb, void *udata);
 
 void supervisor_children_fini(void);
 

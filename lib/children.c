@@ -100,6 +100,9 @@ struct child_s {
 
 static struct child_s SRV_BEACON = { NULL, NULL, -1 };
 
+static supervisor_postfork_f *supervisor_cb_postfork = NULL;
+static void *supervisor_cb_postfork_udata = NULL;
+
 static struct child_s *
 supervisor_get_child(const gchar *key)
 {
@@ -338,12 +341,6 @@ _child_start(struct child_s *sd, void *udata, supervisor_cb_f cb)
 
 	_child_set_rlimits(&(sd->rlimits), &saved_limits);
 	sd->pid = fork();
-	_child_restore_rlimits(&saved_limits);
-
-	INFO("set limits (%"G_GINT64_FORMAT",%"G_GINT64_FORMAT",%"G_GINT64_FORMAT")"
-		" then restored (%"G_GINT64_FORMAT",%"G_GINT64_FORMAT",%"G_GINT64_FORMAT") (stack,file,core)"
-		, sd->rlimits.stack_size, sd->rlimits.nb_files, sd->rlimits.core_size
-		, saved_limits.stack_size, saved_limits.nb_files, saved_limits.core_size);
 
 	switch (sd->pid) {
 
@@ -354,6 +351,8 @@ _child_start(struct child_s *sd, void *udata, supervisor_cb_f cb)
 		return -1;
 
 	case 0: /*child*/
+		if (supervisor_cb_postfork != NULL)
+			supervisor_cb_postfork(supervisor_cb_postfork_udata);
 		reset_sighandler();
 		
 		if (cb) {
@@ -402,6 +401,13 @@ _child_start(struct child_s *sd, void *udata, supervisor_cb_f cb)
 		return 0;/*makes everybody happy*/
 
 	default: /*father*/
+		_child_restore_rlimits(&saved_limits);
+
+		INFO("set limits (%"G_GINT64_FORMAT",%"G_GINT64_FORMAT",%"G_GINT64_FORMAT")"
+			" then restored (%"G_GINT64_FORMAT",%"G_GINT64_FORMAT",%"G_GINT64_FORMAT") (stack,file,core)"
+			, sd->rlimits.stack_size, sd->rlimits.nb_files, sd->rlimits.core_size
+			, saved_limits.stack_size, saved_limits.nb_files, saved_limits.core_size);
+
 		FLAG_DEL(sd,MASK_BROKEN);
 		sd->counter_started ++;
 		errsav = errno;
@@ -821,11 +827,18 @@ supervisor_children_enable(const char *key, gboolean enable)
 		return -1;
 	}
 
-	/* If a processus is enabled and if it is hes never been started,
+	/* If the process is being disabled, there is no need to
+	 * keep the BROKEN flag. This flag would survive a later
+	 * re-enabling of the process... */
+	if (!enable)
+		_child_set_flag(sd, MASK_BROKEN, FALSE);
+
+	/* If a processus is enabled and if it is has never been started,
 	 * We ask to start it the next turn */
 	if (enable && !sd->last_start_attempt)
-		_child_set_flag(sd, MASK_STARTED, enable);
+		_child_set_flag(sd, MASK_STARTED, TRUE);
 
+	errno = 0;
 	return _child_set_flag(sd, MASK_DISABLED, !enable);
 }
 
@@ -1035,5 +1048,12 @@ supervisor_children_set_ids(const gchar *key, gint32 uid, gint32 gid)
 	sd->gid = gid;
 	errno = 0;
 	return 0;
+}
+
+void
+supervisor_set_callback_postfork(supervisor_postfork_f *cb, void *udata)
+{
+	supervisor_cb_postfork_udata = udata;
+	supervisor_cb_postfork = cb;
 }
 
