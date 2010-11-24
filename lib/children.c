@@ -98,7 +98,14 @@ struct child_s {
 	struct my_rlimits_s rlimits;
 };
 
-static struct child_s SRV_BEACON = { NULL, NULL, -1 };
+static struct child_s SRV_BEACON = {
+	NULL, NULL, -1, 0, 0,
+	NULL, 0, 0, NULL,
+	"", "",     /* keys */
+	0, 0, 0, 0, /* birth/death stats */
+	{0,0,0,0,0} /* deaths */,
+	{0,0,0}     /* limits */
+};
 
 static supervisor_postfork_f *supervisor_cb_postfork = NULL;
 static void *supervisor_cb_postfork_udata = NULL;
@@ -719,6 +726,8 @@ gboolean
 supervisor_children_register(const gchar *key, const gchar *cmd, GError **error)
 {
 	struct child_s *sd;
+
+	(void) error;
 
 	/*check if the service is present*/
 	for (sd=SRV_BEACON.next; sd && sd!=&SRV_BEACON ;sd=sd->next) {

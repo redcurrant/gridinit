@@ -1,4 +1,22 @@
+CFLAGS = -std=gnu99
+CFLAGS+= -D_REENTRANT
+CFLAGS+= -D_LARGEFILE64_SOURCE
+CFLAGS+= -D_FILE_OFFSET_BITS=64
+CFLAGS+= -O2
+CFLAGS+= -g
+CFLAGS+= -D HAVE_EXTRA_DEBUG=1
+CFLAGS+= -Wall -Wextra -Werror
+CFLAGS+= -Wimplicit-function-declaration
+CFLAGS+= -Wold-style-definition
+CFLAGS+= -Wredundant-decls
+CFLAGS+= -Wsequence-point
+CFLAGS+= -Wstrict-prototypes
+CFLAGS+= -Wunused
+CFLAGS+= -DG_ERRORCHECK_MUTEXES -DG_DISABLE_DEPRECATED=1 $(GLIB_CFLAGS)
+
 lib_LTLIBRARIES = libgridinit-utils.la
+
+include_HEADERS = gridinit-utils.h
 
 libgridinit_utils_la_SOURCES = \
 	uid.c \
@@ -9,8 +27,6 @@ libgridinit_utils_la_SOURCES = \
 	gridinit-utils.h \
 	gridinit-internals.h
 
-include_HEADERS = gridinit-utils.h
-libgridinit_utils_la_CFLAGS = -g -Wall -std=gnu99 -D_REENTRANT $(GLIB_CFLAGS) -D HAVE_EXTRA_DEBUG=1
 libgridinit_utils_la_LDFLAGS = $(GLIB_LDFLAGS)
 libgridinit_utils_la_LIBADD = -lglib-2.0 
 

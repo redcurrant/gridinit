@@ -93,8 +93,6 @@ guint supervisor_children_kill_obsolete(void);
  */
 guint supervisor_children_mark_obsolete(void);
 
-int supervisor_children_set_user_flags(const gchar *key, guint32 flags);
-
 /**
  * Stops the UP services that are in state that does not allow them to run.
  *

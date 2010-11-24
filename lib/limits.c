@@ -77,9 +77,10 @@ get_i64_from_rlim(rlim_t l)
 
 	if (l == RLIM_INFINITY)
 		return G_MAXINT64;
+#if 0
 	if (l < 0)
 		return -1;
-
+#endif
 	i64 = l;
 	return i64;
 }

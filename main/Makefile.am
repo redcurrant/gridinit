@@ -1,11 +1,24 @@
 noinst_PROGRAMS = 
 bin_PROGRAMS = gridinit gridinit_cmd gridinit_testcmd
 
-CFLAGS= -g -O2 -std=gnu99 -D_REENTRANT
-CFLAGS+= -Wall -Wextra -Werror
-CFLAGS+= $(GLIB_CFLAGS)
-CFLAGS+= -I. -I.. -I../lib -I@LIBEVENT_DIR@/include
+CFLAGS = -std=gnu99
+CFLAGS+= -D_REENTRANT
+CFLAGS+= -D_LARGEFILE64_SOURCE
+CFLAGS+= -D_FILE_OFFSET_BITS=64
+#CFLAGS+= -O2
+CFLAGS+= -O0 -fno-inline
+CFLAGS+= -g
 CFLAGS+= -DHAVE_EXTRA_DEBUG=1
+CFLAGS+= -Wall -Wextra -Werror
+CFLAGS+= -Wimplicit-function-declaration
+CFLAGS+= -Wold-style-definition
+CFLAGS+= -Wredundant-decls
+CFLAGS+= -Wsequence-point
+CFLAGS+= -Wstrict-prototypes
+CFLAGS+= -Wunused
+CFLAGS+= -DG_ERRORCHECK_MUTEXES -DG_DISABLE_DEPRECATED=1 $(GLIB_CFLAGS)
+
+CFLAGS+= -I. -I.. -I../lib -I@LIBEVENT_DIR@/include
 
 LDFLAGS = -L@LIBEVENT_LIBDIR@
 

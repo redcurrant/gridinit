@@ -69,6 +69,15 @@ AC_CHECK_FILE([$LIBEVENT_DIR/include/event.h],,[AC_MSG_ERROR([not found])])
 AC_SUBST(LIBEVENT_DIR)
 AC_SUBST(LIBEVENT_LIBDIR)
 
+# Check grid metautils
+AC_ARG_WITH([metautils],
+  AS_HELP_STRING([--with-metautils=DIR],
+    [Grid metautils install directory (default: /usr/local)]),
+  [METAUTILS_DIR=$withval],
+  [METAUTILS_DIR=/usr/local]
+)
+AC_SUBST(METAUTILS_DIR)
+
 # Toggle specific modules
 AC_ARG_ENABLE([spoolmess],
   AS_HELP_STRING([--enable-spoolmess=DIR],
@@ -84,6 +93,10 @@ AC_ARG_ENABLE([spoolmess],
 	AC_SUBST(SYSMM_LIBS)
 
 	sysmm_enabled=true
+
+	AC_CHECK_FILE([$METAUTILS_DIR/include/metautils.h],, [AC_MSG_ERROR([not found])])
+	AC_CHECK_FILE([$METAUTILS_DIR/include/metacomm.h],, [AC_MSG_ERROR([not found])])
+	AC_CHECK_FILE([$METAUTILS_DIR/include/metatypes.h],, [AC_MSG_ERROR([not found])])
   ]
 )
 AM_CONDITIONAL([SYSMM_ENABLED], [test x$sysmm_enabled = xtrue])

@@ -35,6 +35,9 @@
 #include "./gridinit_alerts.h"
 #include "../lib/gridinit-internals.h"
 
+#define USERFLAG_ONDIE_EXIT                                          0x00000001
+#define USERFLAG_ALERT_PENDING                                       0x00000002
+
 #ifdef HAVE_EXTRA_DEBUG
 # define XDEBUG DEBUG
 # define XTRACE TRACE
@@ -44,6 +47,13 @@
 #endif
 
 #define BOOL(i) (i?1:0)
+
+typedef int (*cmd_f)(struct bufferevent *bevent, int argc, char **argv);
+
+struct cmd_mapping_s {
+	const gchar *cmd_name;
+	cmd_f cmd_callback;
+};
 
 struct server_sock_s {
 	int family;
@@ -76,9 +86,6 @@ static gboolean _cfg_reload(gboolean services_only, GError **err);
 
 static void servers_ensure(void);
 
-
-#define USERFLAG_ONDIE_EXIT                                          0x00000001
-#define USERFLAG_ALERT_PENDING                                       0x00000002
 
 /* ------------------------------------------------------------------------- */
 
@@ -157,163 +164,121 @@ alert_proc_started(void *udata, struct child_info_s *ci)
 
 /* COMMANDS management ----------------------------------------------------- */
 
-#define REPLY_STR_CONTANT(BuffEvent,Message) bufferevent_write((BuffEvent), (Message), sizeof(Message)-1)
+static gboolean
+service_matches_group(const gchar *group, struct child_info_s *ci)
+{
+	return 0 == g_ascii_strcasecmp(ci->group, group);
+}
 
 static void
-__reply_sprintf(struct bufferevent *bevent, const char *fmt, ...)
+service_run_groupv(int nb_groups, char **groupv, void *udata, supervisor_cb_f cb)
 {
-	gchar *str = NULL;
-	va_list ap;
-	
-	va_start(ap, fmt);
-	str = g_strdup_vprintf(fmt, ap);
-	va_end(ap);
-
-	if (str) {
-		bufferevent_write(bevent, str, strlen(str));
-		g_free(str);
-	}
-}
-
-static int
-command_check(struct bufferevent *bevent, int argc, char **argv)
-{
-	(void) argc;
-	(void) argv;
-	servers_ensure();
-	REPLY_STR_CONTANT(bevent, "Done! (check the logs)\n");
-	return 0;
-}
-
-static int
-command_start(struct bufferevent *bevent, int argc, char **args)
-{
-	guint count = 0;
-	void start_process(const char *proc_name) {
-
-		DEBUG("Repairing and Starting [%s]", proc_name);
-
-		supervisor_children_repair(proc_name);
-		
-		switch (supervisor_children_status(proc_name, TRUE)) {
-		case -1:
-			NOTICE("Cannot start [%s] : %s", proc_name, strerror(errno));
-			__reply_sprintf(bevent, "notfound: %s\n", proc_name);
-			return;
-		case 0:
-			count ++;
-			NOTICE("Already started [%s] : %s", proc_name, strerror(errno));
-			__reply_sprintf(bevent, "already: %s\n", proc_name);
-			return;
-		case 1:
-			count ++;
-			NOTICE("Started [%s] : %s", proc_name, strerror(errno));
-			__reply_sprintf(bevent, "enabled: %s\n", proc_name);
-			return;
-		default:
-			NOTICE("Cannot start [%s] : %s", proc_name, strerror(errno));
-			__reply_sprintf(bevent, "error: %s (%s)\n", proc_name, strerror(errno));
+	void group_filter(void *u1, struct child_info_s *ci) {
+		if (!service_matches_group((gchar*)u1, ci)) {
+			TRACE("start: Skipping [%s] with group [%s]", ci->key, ci->group);
 			return;
 		}
+		cb(udata, ci);
 	}
 
-	void child_starter(void *udata, struct child_info_s *ci) {
-		char *group = udata;
+	struct bufferevent *bevent;
 
-		if (group && *group && g_ascii_strcasecmp(ci->group, group)) {
-			DEBUG("start: Skipping [%s] with group [%s]", ci->key, ci->group);
-			return;
-		}
-		start_process(ci->key);
-	}
-
-	if (argc <= 1) {
-		supervisor_run_services(NULL, child_starter);
-	}
+	if (!nb_groups || !groupv)
+		supervisor_run_services(NULL, cb);
 	else {
 		int i;
-		for (i=1; i<argc ;i++) {
-			char *what = args[i];
+		char *what;
+		struct child_info_s ci;
+		bevent = udata;
+
+		for (i=0; i<nb_groups ;i++) {
+			what = groupv[i];
 			if (*what == '@') {
-				DEBUG("start: only group [%s]", what);
-				supervisor_run_services(what+1, child_starter);
+				TRACE("Callback on group [%s]", what);
+				supervisor_run_services(what+1, group_filter);
 			}
 			else {
-				DEBUG("start: only service [%s]", what);
-				start_process(what);
+				bzero(&ci, sizeof(ci));
+				if (0 == supervisor_children_get_info(what, &ci)) {
+					TRACE("Calback on service [%s]", what);
+					cb(udata, &ci);
+				}
+				else {
+					if (bevent) 
+						evbuffer_add_printf(bufferevent_get_output(bevent), "%d %s\n", errno, what);
+					if (errno == ENOENT)
+						TRACE("Service not found [%s]\n", what);
+					else
+						ERROR("Internal error [%s] : %s", what, strerror(errno));
+				}
 			}
 		}
 	}
-	
-	__reply_sprintf(bevent, "Done! (%u services matched)\n", count);
+}
+
+static int
+command_start(struct bufferevent *bevent, int argc, char **argv)
+{
+	void start_process(void *udata, struct child_info_s *ci) {
+		(void) udata;
+
+		supervisor_children_repair(ci->key);
+		
+		switch (supervisor_children_status(ci->key, TRUE)) {
+		case 0:
+			NOTICE("Already started [%s]", ci->key);
+			evbuffer_add_printf(bufferevent_get_output(bevent), "%d %s\n", EALREADY, ci->key);
+			return;
+		case 1:
+			NOTICE("Started [%s]", ci->key);
+			evbuffer_add_printf(bufferevent_get_output(bevent), "%d %s\n", 0, ci->key);
+			return;
+		default:
+			NOTICE("Cannot start [%s] : %s", ci->key, strerror(errno));
+			evbuffer_add_printf(bufferevent_get_output(bevent), "%d %s\n", errno, ci->key);
+			return;
+		}
+	}
+
+	service_run_groupv(argc, argv, bevent, start_process);
+	bufferevent_enable(bevent, EV_WRITE);
+	bufferevent_flush(bevent, EV_WRITE, BEV_FINISHED);
 	return 0;
 }
 
 static int 
-command_stop(struct bufferevent *bevent, int argc, char **args)
+command_stop(struct bufferevent *bevent, int argc, char **argv)
 {
-	guint count = 0;
-	void stop_process(const char *proc_name) {
-		INFO("Stopping process keyed [%s]", proc_name);
-		switch (supervisor_children_status(proc_name, FALSE)) {
-		case -1:
-			__reply_sprintf(bevent, "notfound: %s\n", proc_name);
-			return;
+	void stop_process(void *udata, struct child_info_s *ci) {
+		(void) udata;
+		switch (supervisor_children_status(ci->key, FALSE)) {
 		case 0:
-			count ++;
-			__reply_sprintf(bevent, "already: %s\n", proc_name);
+			NOTICE("Already stopped [%s]", ci->key);
+			evbuffer_add_printf(bufferevent_get_output(bevent), "%d %s\n", EALREADY, ci->key);
 			return;
 		case 1:
-			count ++;
-			__reply_sprintf(bevent, "stopped: %s\n", proc_name);
+			NOTICE("Stopped [%s]", ci->key);
+			evbuffer_add_printf(bufferevent_get_output(bevent), "%d %s\n", 0, ci->key);
 			return;
 		default:
-			__reply_sprintf(bevent, "error: %s (%s)\n", proc_name, strerror(errno));
+			NOTICE("Cannot stop [%s] : %s", ci->key, strerror(errno));
+			evbuffer_add_printf(bufferevent_get_output(bevent), "%d %s\n", errno, ci->key);
 			return;
 		}
 	}
 
-	void child_stopper(void *udata, struct child_info_s *ci) {
-		char *group = udata;
-
-		if (group && *group && g_ascii_strcasecmp(ci->group, group))
-			return;
-		stop_process(ci->key);
-	}
-
-	if (argc <= 1) {
-		supervisor_run_services(NULL, child_stopper);
-	}
-	else {
-		int i;
-		for (i=1; i<argc ;i++) {
-			char *what = args[i];
-			if (*what == '@')
-				supervisor_run_services(what+1, child_stopper);
-			else
-				stop_process(what);
-		}
-	}
-
-	__reply_sprintf(bevent, "Done! (%u services matched)\n", count);
+	service_run_groupv(argc, argv, bevent, stop_process);
+	bufferevent_enable(bevent, EV_WRITE);
+	bufferevent_flush(bevent, EV_WRITE, BEV_FINISHED);
 	return 0;
 }
 
 static int
-command_show(struct bufferevent *bevent, int argc, char **args)
+command_show(struct bufferevent *bevent, int argc, char **argv)
 {
-	/* Callback used when running all the services or the services
-	 * matching specific groups */
-	void run_service(void *udata, struct child_info_s *ci) {
-		gsize buff_size;
-		gchar buff[2048];
-		gchar *group = udata;
-		
-		/* if a group is set, skip the service if it doesn't match the group*/
-		if (group && *group && g_ascii_strcasecmp(group, ci->group))
-			return;
-
-		buff_size = g_snprintf(buff, sizeof(buff),
+	void print_process(void *udata, struct child_info_s *ci) {
+		(void) udata;
+		evbuffer_add_printf(bufferevent_get_output(bevent), 
 				"%d "
 				"%d %d %d "
 				"%u %u "
@@ -328,54 +293,32 @@ command_show(struct bufferevent *bevent, int argc, char **args)
 			ci->rlimits.core_size, ci->rlimits.stack_size, ci->rlimits.nb_files,
 			ci->uid, ci->gid,
 			ci->key, ci->group, ci->cmd);
-
-		TRACE("status line [%.*s]", buff_size-1, buff);
-		bufferevent_write(bevent, buff, buff_size);
 	}
 
-	int i;
-
-	if (argc <= 1) {
-		supervisor_run_services(NULL, run_service);
-		return 0;
-	}
-
-	for (i=1; i<argc ;i++) {
-		char *what = args[i];
-
-		if (*what == '@') /* Run the services for the group */
-			supervisor_run_services(what+1, run_service);
-		else { /* Specific service asked */
-			int rc;
-			struct child_info_s ci;
-
-			bzero(&ci, sizeof(ci));
-			rc = supervisor_children_get_info(what, &ci);
-			if (rc == 0)
-				run_service(NULL, &ci);
-			else {
-				if (errno == ENOENT)
-					REPLY_STR_CONTANT(bevent, "Service not found\n");
-				else
-					REPLY_STR_CONTANT(bevent, "gridinit internal error\n");
-			}
-		}
-	}
-	REPLY_STR_CONTANT(bevent, "\n");
+	service_run_groupv(argc, argv, NULL, print_process);
+	bufferevent_enable(bevent, EV_WRITE);
+	bufferevent_flush(bevent, EV_WRITE, BEV_FINISHED);
 	return 0;
 }
 
 static int
 command_repair(struct bufferevent *bevent, int argc, char **argv)
 {
-	int count;
+	void repair_process(void *udata, struct child_info_s *ci) {
+		(void) udata;
+		if (0 == supervisor_children_repair(ci->key)) {
+			INFO("Repaired [%s]", ci->key);
+			evbuffer_add_printf(bufferevent_get_output(bevent), "%d %s\n", 0, ci->key);
+		}
+		else {
+			WARN("Failed to repair [%s] : %s", ci->key, strerror(errno));
+			evbuffer_add_printf(bufferevent_get_output(bevent), "%d %s\n", errno, ci->key);
+		}
+	}
 
-	(void) argc;
-	(void) argv;
-
-	count = supervisor_children_repair_all();
-	__reply_sprintf(bevent, "Repaired %d processes!\n\n", count);
-
+	service_run_groupv(argc, argv, bevent, repair_process);
+	bufferevent_enable(bevent, EV_WRITE);
+	bufferevent_flush(bevent, EV_WRITE, BEV_FINISHED);
 	return 0;
 }
 
@@ -389,50 +332,20 @@ command_reload(struct bufferevent *bevent, int argc, char **argv)
 	(void) argv;
 
 	count = supervisor_children_mark_obsolete();
-	__reply_sprintf(bevent, "Marked %u obsolete services\n", count);
+	TRACE("Marked %u obsolete services\n", count);
 
 	if (!_cfg_reload(TRUE, &error_local)) {
-		__reply_sprintf(bevent, "error: Failed to reload the configuration from [%s]\n", config_path);
-		__reply_sprintf(bevent, "cause: %s\n", error_local ? error_local->message : "NULL");
+		ERROR("error: Failed to reload the configuration from [%s]\n", config_path);
+		ERROR("cause: %s\n", error_local ? error_local->message : "NULL");
+		evbuffer_add_printf(bufferevent_get_output(bevent), "0 reload\n");
 	}
 	else {
 		count = supervisor_children_disable_obsolete();
-		__reply_sprintf(bevent, "Services refreshed, %u disabled\n", count);
+		TRACE("Services refreshed, %u disabled\n", count);
+		evbuffer_add_printf(bufferevent_get_output(bevent), "1 reload\n");
 	}
 	return 0;
 }
-
-static int
-command_INVALID(struct bufferevent *bevent, int argc, char **argv)
-{
-	(void) argc;
-	(void) argv;
-	REPLY_STR_CONTANT(bevent, "400 BAD REQUEST\n");
-	return 0;
-}
-
-static int
-command_help(struct bufferevent *bevent, int argc, char **argv)
-{
-	(void) argc;
-	(void) argv;
-	REPLY_STR_CONTANT(bevent, "Commands:\n");
-	REPLY_STR_CONTANT(bevent, "\t start ID [ID]...  : starts the process with the given ID\n");
-	REPLY_STR_CONTANT(bevent, "\t stop ID [ID]...   : stops the process with the given ID\n");
-	REPLY_STR_CONTANT(bevent, "\t status [ID]...    : stops the process with the given ID\n");
-	REPLY_STR_CONTANT(bevent, "\t reload            : reloads the configuration and restores a UNIX socket if necessary\n");
-	REPLY_STR_CONTANT(bevent, "\t repair            : \n");
-	REPLY_STR_CONTANT(bevent, "\t check             : \n");
-	REPLY_STR_CONTANT(bevent, "\n");
-	return 0;
-}
-
-typedef int (*cmd_f)(struct bufferevent *bevent, int argc, char **argv);
-
-struct cmd_mapping_s {
-	const gchar *cmd_name;
-	cmd_f cmd_callback;
-};
 
 static struct cmd_mapping_s COMMANDS [] = {
 	{"status",  command_show },
@@ -440,8 +353,6 @@ static struct cmd_mapping_s COMMANDS [] = {
 	{"start",   command_start },
 	{"stop",    command_stop },
 	{"reload",  command_reload },
-	{"check",   command_check },
-	{"help",    command_help },
 	{NULL,      NULL}
 };
 
@@ -490,127 +401,82 @@ supervisor_signal_handler(int s, short flags, void *udata)
 }
 
 static void
-__bevent_error(struct bufferevent *p_bevent, short what, void *udata)
+__bevent_error(struct bufferevent *bevent, short what, void *udata)
 {
-	int fd;
-
-	(void) what;
-	fd = GPOINTER_TO_SIZE(udata);
-
-	if (fd >= 0) {
-		int sock_err;
+	(void) udata;
+	if (what & BEV_EVENT_CONNECTED) {
+		TRACE("Connection established for fd=%d what=%04X", bufferevent_getfd(bevent), what);
+		bufferevent_enable(bevent, EV_READ|EV_WRITE);
+	}
+	if (what & ~BEV_EVENT_CONNECTED) {
+		int fd, sock_err;
 		socklen_t sock_err_len;
 
+		fd = bufferevent_getfd(bevent);
 		sock_err_len = sizeof(sock_err);
 		if (0 != getsockopt(fd, SOL_SOCKET, SO_ERROR, &sock_err, &sock_err_len))
-			DEBUG("Unexpected error fd=%d : getsockopt() error : %s", fd, strerror(errno));
+			TRACE("Error on fd=%d what=%04X : getsockopt() error : %s", fd, what, strerror(errno));
 		else
-			DEBUG("Connection closed fd=%d : %s", fd, strerror(sock_err));
-		shutdown(fd, SHUT_RDWR);
-		close(fd);
+			TRACE("Error on fd=%d what=%04X : %s", fd, what, strerror(sock_err));
+		bufferevent_flush(bevent, EV_READ,  BEV_FINISHED);
+		bufferevent_flush(bevent, EV_WRITE, BEV_FINISHED);
+		bufferevent_enable(bevent, EV_READ|EV_WRITE);
 	}
-	else {
-		WARN("BufferEvent %p : error detected, freeing and closing fd=%d", p_bevent, fd);
-	}
-
-	bufferevent_disable(p_bevent, EV_READ);
-	bufferevent_disable(p_bevent, EV_WRITE);
-	bufferevent_free(p_bevent);
 }
 
 static void
-__event_command_in(struct bufferevent *p_bevent, void *udata)
+__event_command_in(struct bufferevent *bevent, void *udata)
 {
-	int rc = 0;
-	/* raw command */
-	size_t offset;
-	char buff[1024];
-	/* parsed command */
 	int argc = 0;
 	gchar **argv = NULL;
+	char *cmd;
+	size_t cmd_len = 0;
 
 	(void) udata;
-	offset = 0;
-	memset(buff, 0x00, sizeof(buff));
+	TRACE("Data available from fd=%d", bufferevent_getfd(bevent));
 
-	/* Read the command received until a new line is available or until
-	 * the end of the input. Remember this server only uses UNIX sockets,
-	 * and messages sent to these sockets are sent/received atomically. */
-
-	while (offset < sizeof(buff)-1) {
-		char c;
-		size_t r;
-		r = bufferevent_read(p_bevent, &c, 1);
-		if (!r)
-			break;
-		if (!c || c=='\n' || c=='\r') {
-			if (!offset)
-				continue;
-			else
-				break;
-		}
-		buff[offset ++] = c;
-	}
-	
-	if (!offset) { /* Empty buffer, read again */
-		bufferevent_enable(p_bevent, EV_READ);
-		bufferevent_disable(p_bevent, EV_WRITE);
-		TRACE("fd=%d : empty command, reading again", GPOINTER_TO_INT(udata));
+	cmd = evbuffer_readln(bufferevent_get_input(bevent), &cmd_len, EVBUFFER_EOL_CRLF);
+	if (!cmd) {
+		TRACE("Read error from fd=%d", bufferevent_getfd(bevent));
+		bufferevent_disable(bevent, EV_WRITE);
+		bufferevent_enable(bevent,  EV_READ);
 		return;
 	}
-	
-	/* Something has been read, manage this as a command */
-	if (!g_shell_parse_argv(buff, &argc, &argv, NULL)) {
-		REPLY_STR_CONTANT(p_bevent, "400 Invalid request");
-		rc = 0;
-	}
 	else {
-		cmd_f cmd = __resolve_command(argv[0]);
-		if (!cmd)
-			rc = command_INVALID(p_bevent, argc, argv);
-		else
-			rc = (cmd)(p_bevent, argc, argv);
-		g_strfreev(argv);
-		argv = NULL;
-	}
+		cmd_f callback;
+		int rc = -1;
 
-	/* Manage the command's return code */
-	if (rc == 0) {
-		bufferevent_disable(p_bevent, EV_READ);
-		bufferevent_enable(p_bevent, EV_WRITE);
-	}
-	else {
-		int fd = GPOINTER_TO_INT(udata);
-		bufferevent_disable(p_bevent, EV_READ);
-		bufferevent_disable(p_bevent, EV_WRITE);
-		if (fd >= 0) {
-			shutdown(fd, SHUT_RDWR);
-			close(fd);
+		if (!g_shell_parse_argv(cmd, &argc, &argv, NULL))
+			TRACE("Invalid request from fd=%d", bufferevent_getfd(bevent));
+		else {
+			TRACE("Executing request [%s] from fd=%d", argv[0], bufferevent_getfd(bevent));
+			if (NULL != (callback = __resolve_command(argv[0])))
+				rc = (callback)(bevent, argc-1, argv+1);
+			g_strfreev(argv);
 		}
-		bufferevent_free(p_bevent);
+		free(cmd);
+	
+		bufferevent_flush(bevent, EV_WRITE|EV_READ, BEV_FINISHED);
+		bufferevent_disable(bevent, EV_READ);
+		bufferevent_enable(bevent, EV_WRITE);
 	}
 }
 
 static void
-__event_command_out(struct bufferevent *p_bevent, void *udata)
+__event_command_out(struct bufferevent *bevent, void *udata)
 {
-	int fd;
-	
-	fd = GPOINTER_TO_SIZE(udata);
-
-	bufferevent_disable(p_bevent, EV_READ);
-	bufferevent_disable(p_bevent, EV_WRITE);
-	if (fd >= 0) {
-		shutdown(fd, SHUT_RDWR);
-		close(fd);
-	}
-	bufferevent_free(p_bevent);
-	DEBUG("Connection closed by server fd=%d : no keepalive", fd);
+	(void) udata;
+	TRACE("Closing client connection fd=%d", bufferevent_getfd(bevent));
+	bufferevent_disable(bevent, EV_READ|EV_WRITE);
+	close(bufferevent_getfd(bevent));
+	bufferevent_setfd(bevent, -1);
+	bufferevent_free(bevent);
 }
 
 static void
 __event_accept(int fd, short flags, void *udata)
 {
+	struct bufferevent *bevent =  NULL;
 	struct linger ls = {1,0};
 	socklen_t ss_len;
 	struct sockaddr_storage ss;
@@ -670,14 +536,12 @@ __event_accept(int fd, short flags, void *udata)
 	evutil_make_socket_closeonexec(fd_client);
 
 	/* Now manage this connection */
-	struct bufferevent *p_bevent =  NULL;
-	p_bevent = bufferevent_new(fd_client, __event_command_in,
-		__event_command_out, __bevent_error, GINT_TO_POINTER(fd_client));
-	bufferevent_settimeout(p_bevent, 1000, 4000);
-	bufferevent_enable(p_bevent, EV_READ);
-	bufferevent_disable(p_bevent, EV_WRITE);
-	bufferevent_base_set(libevents_handle, p_bevent);
-	INFO("Connection accepted : accept(%d) = %d", fd, fd_client);
+	bevent = bufferevent_new(fd_client, __event_command_in, __event_command_out, __bevent_error, NULL);
+	bufferevent_settimeout(bevent, 1000, 4000);
+	bufferevent_enable(bevent, EV_READ);
+	bufferevent_disable(bevent, EV_WRITE);
+	bufferevent_base_set(libevents_handle, bevent);
+	TRACE("Connection accepted server=%d client=%d", fd, fd_client);
 }
 
 

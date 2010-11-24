@@ -16,6 +16,9 @@
 
 #define DEFAULT_SOPCODE "MUT-GRD-7000"
 
+/* Merci Frederic Gerard  de ne pas fournir de .h ! */
+extern int spoolmess(const char *identifier, const char *criticity, const char *format, ...);
+
 static char SOPCODE[sizeof(DEFAULT_SOPCODE)+1] = DEFAULT_SOPCODE;
 static char CODE_CLIENT[64] = "";
 static char CODE_OBJET[64] = "";
@@ -23,7 +26,8 @@ static char CODE_OBJET[64] = "";
 static void
 gridinit_spoolmess_handle(void *udata, int event, const char *msg)
 {
-	int offset, _s;
+	int _s;
+	size_t offset;
 	char working_message[1024];
 	const char *criticity;
 	const char *default_msg;
@@ -52,7 +56,7 @@ gridinit_spoolmess_handle(void *udata, int event, const char *msg)
 		break;
 	}
 	
-	(void*) udata;
+	(void) udata;
 	offset = 0;
 
 	if (*CODE_CLIENT)
@@ -76,7 +80,7 @@ gridinit_spoolmess_init(void *udata, GHashTable *params)
 {
 	char *str;
 
-	(void*) udata;
+	(void) udata;
 	if (!params) {
 		abort();
 		return;
@@ -108,7 +112,7 @@ gridinit_spoolmess_init(void *udata, GHashTable *params)
 static void
 gridinit_spoolmess_fini(void *udata)
 {
-	(void*) udata;
+	(void) udata;
 }
 
 struct gridinit_alert_handle_s MODULE_EXPORT = {

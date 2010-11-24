@@ -27,8 +27,26 @@ static gboolean flag_help = FALSE;
 
 static gchar sock_path[1024];
 static gchar line[65536];
+static gboolean flag_color = FALSE;
 
 #define BOOL(i) (i?1:0)
+
+struct dump_status_arg_s {
+	int how;
+	int argc;
+	char **args;
+	guint count_faulty;
+};
+
+struct dump_as_is_arg_s {
+	guint count_success;
+	guint count_errors;
+};
+
+struct command_s {
+	const gchar *name;
+	int (*action) (int argc, char **args);
+};
 
 struct child_info_s {
 	char *key;
@@ -53,25 +71,65 @@ struct child_info_s {
 	} rlimits;
 };
 
+struct keyword_set_s {
+	const gchar *already;
+	const gchar *done;
+	const gchar *failed;
+
+	const gchar *broken;
+	const gchar *down;
+	const gchar *disabled;
+	const gchar *up;
+};
+
+static struct keyword_set_s KEYWORDS_NORMAL = {
+	"ALREADY",
+	"DONE",
+	"FAILED",
+
+	"BROKEN",
+	"DOWN",
+	"DISABLED",
+	"UP"
+};
+
+static struct keyword_set_s KEYWORDS_COLOR = {
+	"[33mALREADY[0m",
+	"[32mDONE[0m",
+	"[31mFAILED[0m",
+
+	"[31mBROKEN[0m",
+	"[33mDOWN[0m",
+	"[0mDISABLED[0m",
+	"[32mUP[0m"
+};
+
 static gint
 compare_child_info(gconstpointer p1, gconstpointer p2)
 {
 	const struct child_info_s *c1, *c2;
 	c1 = p1;
 	c2 = p2;
-	return g_strcasecmp(c1->key, c2->key);
+	return g_ascii_strcasecmp(c1->key, c2->key);
 }
 
 static const char *
-get_child_status(struct child_info_s *ci)
+get_child_status(struct child_info_s *ci, gboolean *faulty)
 {
+	struct keyword_set_s *kw;
+
+	kw = flag_color ? &KEYWORDS_COLOR : &KEYWORDS_NORMAL;
+	*faulty = TRUE;
+
 	if (ci->broken)
-		return "BROKEN";
+		return kw->broken;
 	if (!ci->enabled)
-		return "DISABLED";
+		return kw->disabled;
 	if (ci->pid <= 0)
-		return "DOWN";
-	return "UP";
+		return kw->down;
+
+	*faulty = FALSE;
+	return kw->up;
 }
 
 static size_t
@@ -102,6 +160,38 @@ get_longest_key(GList *all_jobs)
 	return maxlen;
 }
 
+static size_t
+my_chomp(gchar *str)
+{
+	gchar c;
+	size_t len;
+
+	len = strlen(str);
+	while (len && (c=str[len-1]) && g_ascii_isspace(c))
+		str[--len] = '\0';
+	return len;
+}
+
+static void
+unpack_line(gchar *str, gchar **start, int *code)
+{
+	gchar c, *p = NULL;
+
+	*start = str;
+	*code = EINVAL;
+	if (!str || !*str)
+		return ;
+	if (!my_chomp(str))
+		return ;
+	*code = g_ascii_strtoll(str, &p, 10);
+
+	if (p) {
+		while ((c = *p) && g_ascii_isspace(c))
+			p++;
+		*start = p;
+	}
+}
+
 static GList*
 read_services_list(FILE *in_stream)
 {
@@ -109,10 +199,10 @@ read_services_list(FILE *in_stream)
 
 	while (!feof(in_stream) && !ferror(in_stream)) {
 		if (NULL != fgets(line, sizeof(line), in_stream)) {
-			int len = strlen(line);
-			if (line[len-1] == '\n' || line[len-1]=='\r')
-				line[--len] = '\0';
-			gchar **tokens = g_strsplit(line, " ", 15);
+
+			(void) my_chomp(line);
+
+			gchar **tokens = g_strsplit_set(line, " \t\r\n", 15);
 			if (tokens) {
 				if (g_strv_length(tokens) == 15) {
 					struct child_info_s ci;
@@ -142,28 +232,37 @@ read_services_list(FILE *in_stream)
 	return g_list_sort(all_jobs, compare_child_info);
 }
 
+
 static void
 dump_as_is(FILE *in_stream, void *udata)
 {
-	(void) udata;
+	int code;
+	gchar *start;
+	struct dump_as_is_arg_s *dump_args;
+	struct keyword_set_s *kw;
+
+	kw = flag_color ? &KEYWORDS_COLOR : &KEYWORDS_NORMAL;
+
+	dump_args = udata;
 	while (!feof(in_stream) && !ferror(in_stream)) {
+		bzero(line, sizeof(line));
 		if (NULL != fgets(line, sizeof(line), in_stream)) {
-			int len = strlen(line);
-			if (line[len-1] == '\n' || line[len-1]=='\r')
-				line[--len] = '\0';
-			if (write(1, line, len)!=len || write(1, "\n", 1)!=1) {
-				g_error("stdout write error");
-				return;
+			start = NULL;
+			(void)unpack_line(line, &start, &code);
+
+			if (dump_args) {
+				if (code==0 || code==EALREADY)
+					dump_args->count_success ++;
+				else
+					dump_args->count_errors ++;
 			}
+
+			fprintf(stdout, "%s\t%s\t%s\n",
+					(code==0 ? kw->done : (code==EALREADY?kw->already:kw->failed)),
+					start, strerror(code));
 		}
 	}
 }
-
-struct dump_status_arg_s {
-	int how;
-	int argc;
-	char **args;
-};
 
 static void
 dump_status(FILE *in_stream, void *udata)
@@ -231,6 +330,7 @@ dump_status(FILE *in_stream, void *udata)
 	for (l=all_jobs; l ;l=l->next) {
 		char str_time[20] = "---------- --------";
 		struct child_info_s *ci;
+		gboolean faulty = FALSE;
 		
 		ci = l->data;
 
@@ -245,22 +345,25 @@ dump_status(FILE *in_stream, void *udata)
 
 		switch (status_args->how) {
 		case MINI:
-			fprintf(stdout, fmt_line, ci->key, get_child_status(ci), ci->pid, ci->group);
+			fprintf(stdout, fmt_line, ci->key, get_child_status(ci, &faulty), ci->pid, ci->group);
 			break;
 		case MEDIUM:
 			fprintf(stdout, fmt_line,
-				ci->key, get_child_status(ci), ci->pid,
+				ci->key, get_child_status(ci, &faulty), ci->pid,
 				ci->counter_started, ci->counter_died,
 				str_time, ci->group, ci->cmd);
 			break;
 		default:
 			fprintf(stdout, fmt_line,
-				ci->key, get_child_status(ci), ci->pid,
+				ci->key, get_child_status(ci, &faulty), ci->pid,
 				ci->counter_started, ci->counter_died,
 				ci->rlimits.core_size, ci->rlimits.stack_size, ci->rlimits.nb_files,
 				str_time, ci->group, ci->cmd);
 			break;
 		}
+		
+		if (faulty)
+			status_args->count_faulty ++;
 	}
 	fflush(stdout);
 
@@ -340,6 +443,7 @@ command_status(int lvl, int argc, char **args)
 	struct dump_status_arg_s status_args;
 	gchar *real_args[] = {"status",NULL};
 
+	bzero(&status_args, sizeof(status_args));
 	switch (lvl) {
 		case 0:  status_args.how = MINI; break;
 		case 1:  status_args.how = MEDIUM; break;
@@ -349,7 +453,7 @@ command_status(int lvl, int argc, char **args)
 	status_args.args = args+1;
 
 	send_commandv(dump_status, &status_args, 1, real_args);
-	return 1;
+	return status_args.count_faulty != 0;
 }
 
 static int
@@ -373,41 +477,47 @@ command_status2(int argc, char **args)
 static int
 command_start(int argc, char **args)
 {
-	send_commandv(dump_as_is, NULL, argc, args);
-	return 1;
-}
+	struct dump_as_is_arg_s dump_args;
 
+	bzero(&dump_args, sizeof(dump_args));
+	send_commandv(dump_as_is, &dump_args, argc, args);
+	return dump_args.count_errors != 0;
+}
 
 static int
 command_stop(int argc, char **args)
 {
-	send_commandv(dump_as_is, NULL, argc, args);
-	return 1;
+	struct dump_as_is_arg_s dump_args;
+
+	bzero(&dump_args, sizeof(dump_args));
+	send_commandv(dump_as_is, &dump_args, argc, args);
+	return dump_args.count_errors != 0;
 }
 
 static int
 command_repair(int argc, char **args)
 {
-	send_commandv(dump_as_is, NULL, argc, args);
-	return 1;
+	struct dump_as_is_arg_s dump_args;
+
+	bzero(&dump_args, sizeof(dump_args));
+	send_commandv(dump_as_is, &dump_args, argc, args);
+	return dump_args.count_errors != 0;
 }
 
 static int
 command_reload(int argc, char **args)
 {
+	struct dump_as_is_arg_s dump_args;
+
 	(void) argc;
 	(void) args;
-	send_commandf(dump_as_is, NULL, "reload\n");
-	return 1;
+	bzero(&dump_args, sizeof(dump_args));
+	send_commandf(dump_as_is, &dump_args, "reload\n");
+	return dump_args.count_errors != 0;
 }
 
 
 /* ------------------------------------------------------------------------- */
-
-struct command_s {
-	const gchar *name;
-	int (*action) (int argc, char **args);
-};
 
 static struct command_s COMMANDS[] = {
 	{ "status",   command_status0 },
@@ -430,11 +540,14 @@ main_options(int argc, char **args)
 	g_strlcpy(sock_path, GRIDINIT_SOCK_PATH, sizeof(sock_path)-1);
 
 	/*  */
-	while ((opt = getopt(argc, args, "hc:")) != -1) {
+	while ((opt = getopt(argc, args, "chS:")) != -1) {
 		switch (opt) {
 			case 'c':
+				flag_color = TRUE;
+			case 'S':
 				bzero(sock_path, sizeof(sock_path));
-				g_strlcpy(sock_path, optarg, sizeof(sock_path)-1);
+				if (optarg)
+					g_strlcpy(sock_path, optarg, sizeof(sock_path)-1);
 				break;
 			case 'h':
 				flag_help = TRUE;
@@ -449,7 +562,12 @@ static void
 help(char **args)
 {
 	close(2);
-	g_print("Usage: %s [status{,2,3}|start|stop|reload|repair] [ID...]\n", args[0]);
+	g_print("Usage: %s [-h|-c|-S SOCK]... (status{,2,3}|start|stop|reload|repair) [ID...]\n", args[0]);
+	g_print("\n OPTIONS:\n");
+	g_print("  -c      : coloured display\n");
+	g_print("  -h      : displays a little help section\n");
+	g_print("  -S SOCK : explicit unix socket path\n");
+	g_print("\n COMMANDS:\n");
 	g_print("  status* : Displays the status of the given processes or groups\n");
 	g_print("  start   : Starts the given processes or groups, even if broken\n");
 	g_print("  stop    : Stops the given processes or groups, they won't be automatically\n");
@@ -486,6 +604,9 @@ main(int argc, char ** args)
 			return rc;
 		}
 	}
+
+	fprintf(stderr, "\n*** Invalid command ***\n\n");
+	help(args);
 
 	close(1);
 	close(2);
