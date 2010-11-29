@@ -544,6 +544,7 @@ main_options(int argc, char **args)
 		switch (opt) {
 			case 'c':
 				flag_color = TRUE;
+				break;
 			case 'S':
 				bzero(sock_path, sizeof(sock_path));
 				if (optarg)
