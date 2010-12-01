@@ -11,7 +11,7 @@ CFLAGS+= -g
 CFLAGS+= -DHAVE_EXTRA_DEBUG=1
 CFLAGS+= -Wall -Wextra -Werror
 CFLAGS+= -Wimplicit-function-declaration
-CFLAGS+= -Wold-style-definition
+#CFLAGS+= -Wold-style-definition
 CFLAGS+= -Wredundant-decls
 CFLAGS+= -Wsequence-point
 CFLAGS+= -Wstrict-prototypes
