@@ -333,16 +333,24 @@ command_reload(struct bufferevent *bevent, int argc, char **argv)
 
 	count = supervisor_children_mark_obsolete();
 	TRACE("Marked %u obsolete services\n", count);
+	evbuffer_add_printf(bufferevent_get_output(bevent), "%d obsoleted %u processes\n", 0, count);
 
 	if (!_cfg_reload(TRUE, &error_local)) {
 		ERROR("error: Failed to reload the configuration from [%s]\n", config_path);
 		ERROR("cause: %s\n", error_local ? error_local->message : "NULL");
-		evbuffer_add_printf(bufferevent_get_output(bevent), "0 reload\n");
+		evbuffer_add_printf(bufferevent_get_output(bevent), "%d reload\n", error_local ? error_local->code : EINVAL);
 	}
 	else {
+		evbuffer_add_printf(bufferevent_get_output(bevent), "0 reload\n");
+
 		count = supervisor_children_disable_obsolete();
-		TRACE("Services refreshed, %u disabled\n", count);
-		evbuffer_add_printf(bufferevent_get_output(bevent), "1 reload\n");
+		evbuffer_add_printf(bufferevent_get_output(bevent), "0 disabled %u obsolete processes\n", count);
+
+		if (count)
+			NOTICE("Services refreshed, %u disabled\n", count);
+		else
+			TRACE("Services refreshed, %u disabled\n", count);
+
 	}
 	return 0;
 }
@@ -979,12 +987,12 @@ _cfg_section_service(GKeyFile *kf, const gchar *section, GError **err)
 	str_command = __get_and_enlist(&gc, kf, section, "command");
 	str_enabled = __get_and_enlist(&gc, kf, section, "enabled");
 	str_ondie = __get_and_enlist(&gc, kf, section, "on_die");
-	str_uid = __get_and_enlist(&gc, kf, section, "uid");
-	str_gid = __get_and_enlist(&gc, kf, section, "gid");
-	str_group = __get_and_enlist(&gc, kf, section, "group");
-	str_limit_fd = __get_and_enlist(&gc, kf, section, "limit.max_files");
-	str_limit_core = __get_and_enlist(&gc, kf, section, "limit.core_size");
-	str_limit_stack = __get_and_enlist(&gc, kf, section, "limit.stack_size");
+	str_uid = __get_and_enlist(&gc, kf, section, CFG_KEY_UID);
+	str_gid = __get_and_enlist(&gc, kf, section, CFG_KEY_GID);
+	str_group = __get_and_enlist(&gc, kf, section, CFG_KEY_GROUP);
+	str_limit_fd = __get_and_enlist(&gc, kf, section, CFG_KEY_LIMIT_NBFILES);
+	str_limit_core = __get_and_enlist(&gc, kf, section, CFG_KEY_LIMIT_CORESIZE);
+	str_limit_stack = __get_and_enlist(&gc, kf, section, CFG_KEY_LIMIT_STACKSIZE);
 	str_wd = __get_and_enlist(&gc, kf, section, CFG_KEY_PATH_WORKINGDIR);
 
 	if (!supervisor_children_register(str_key, str_command, err))
@@ -1149,7 +1157,9 @@ _cfg_section_alert(GKeyFile *kf, const gchar *section, GError **err)
 static gboolean
 _cfg_section_default(GKeyFile *kf, const gchar *section, GError **err)
 {
-	gchar buf_user[256]="", buf_group[256]="", buf_includes[1024]="";
+	gchar buf_user[256]="", buf_group[256]="";
+	gchar buf_uid[256]="", buf_gid[256]="";
+	gchar buf_includes[1024]="";
 	gint64 limit_thread_stack = 1024;
 	gint64 limit_core_size = -1;
 	gint64 limit_nb_files = 8192;
@@ -1202,6 +1212,14 @@ _cfg_section_default(GKeyFile *kf, const gchar *section, GError **err)
 			bzero(buf_group, sizeof(buf_group));
 			g_strlcpy(buf_group, str, sizeof(buf_group)-1);
 		}
+		else if (!g_ascii_strcasecmp(*p_key, CFG_KEY_UID)) {
+			bzero(buf_uid, sizeof(buf_uid));
+			g_strlcpy(buf_uid, str, sizeof(buf_uid)-1);
+		}
+		else if (!g_ascii_strcasecmp(*p_key, CFG_KEY_GID)) {
+			bzero(buf_gid, sizeof(buf_gid));
+			g_strlcpy(buf_gid, str, sizeof(buf_gid)-1);
+		}
 		else if (!g_ascii_strcasecmp(*p_key, CFG_KEY_INCLUDES)) {
 			bzero(buf_includes, sizeof(buf_includes));
 			g_strlcpy(buf_includes, str, sizeof(buf_includes)-1);
@@ -1217,16 +1235,20 @@ _cfg_section_default(GKeyFile *kf, const gchar *section, GError **err)
 	(void) supervisor_limit_set(SUPERV_LIMIT_THREAD_STACK, limit_thread_stack * 1024);
 
 	/* Loads the default UID/GID for the services*/
-	if (*buf_user && *buf_group) {
+	if ((*buf_user || *buf_uid) && (*buf_group || *buf_gid)) {
+		gchar *ptr_uid, *ptr_gid;
 		gint32 uid, gid;
 
+		ptr_gid = *buf_gid ? buf_gid : buf_group;
+		ptr_uid = *buf_uid ? buf_uid : buf_user;
+
 		uid = gid = -1;
-		if (!uid_exists(buf_user, &uid)) {
-			WARN("Invalid default UID [%s] : errno=%d %s", buf_user, errno, strerror(errno));
+		if (!uid_exists(ptr_uid, &uid)) {
+			WARN("Invalid default UID [%s] : errno=%d %s", ptr_uid, errno, strerror(errno));
 			uid = -1;
 		}
-		if (!gid_exists(buf_group, &gid)) {
-			WARN("Invalid default GID [%s] : errno=%d %s", buf_user, errno, strerror(errno));
+		if (!gid_exists(ptr_gid, &gid)) {
+			WARN("Invalid default GID [%s] : errno=%d %s", ptr_gid, errno, strerror(errno));
 			gid = -1;
 		}
 		if (uid>0 && gid>0) {
@@ -1296,6 +1318,7 @@ label_exit:
 	return rc;
 }
 
+#define SETERRNO(ERR) do { if ((ERR) && *(ERR) && !(*(ERR))->code) (*(ERR))->code = errno; } while (0)
 static gboolean
 _cfg_reload(gboolean services_only, GError **err)
 {
@@ -1305,12 +1328,14 @@ _cfg_reload(gboolean services_only, GError **err)
 	kf = g_key_file_new();
 
 	if (!g_key_file_load_from_file(kf, config_path, 0, err)) {
+		SETERRNO(err);
 		ERROR("Conf not parseable from [%s]", config_path);
 		goto label_exit;
 	}
 
 	/* First load the main files */
 	if (!_cfg_reload_file(kf, services_only, err)) {
+		SETERRNO(err);
 		ERROR("Conf not loadable from [%s]", config_path);
 		goto label_exit;
 	}

@@ -29,8 +29,16 @@
 # define CFG_KEY_LIMIT_NBFILES "limit.max_files"
 #endif
 
+#ifndef  CFG_KEY_GID
+# define CFG_KEY_GID "gid"
+#endif
+
 #ifndef  CFG_KEY_GROUP
 # define CFG_KEY_GROUP "group"
+#endif
+
+#ifndef  CFG_KEY_UID
+# define CFG_KEY_UID "uid"
 #endif
 
 #ifndef  CFG_KEY_USER
