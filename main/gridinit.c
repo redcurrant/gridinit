@@ -1471,6 +1471,36 @@ write_pid_file(void)
 	fclose(stream_pidfile);
 }
 
+static gboolean
+is_gridinit_running(const gchar *path)
+{
+	int rc, usock;
+	struct {
+		struct sockaddr_un sun;
+		gchar padding[512];
+	} addr;
+	
+	bzero(&addr, sizeof(addr));
+	addr.sun.sun_family = AF_UNIX;
+	g_strlcpy(addr.sun.sun_path, path, sizeof(addr.sun.sun_path) + sizeof(addr.padding) -1);
+
+	if (0 > (usock = socket(PF_UNIX, SOCK_STREAM, 0)))
+		return FALSE;
+
+	rc = connect(usock, (struct sockaddr*)&addr, sizeof(addr));
+	close(usock);
+
+	if (rc == 0)
+		return TRUE;
+
+	rc = unlink(path);
+	g_printerr("Removing stalled socket : unlink(%s) = %d : errno = %d (%s)\n",
+			path, rc, errno, strerror(errno));
+	NOTICE("Removing stalled socket : unlink(%s) = %d : errno = %d (%s)",
+			path, rc, errno, strerror(errno));
+	return FALSE;
+}
+
 int
 main(int argc, char ** args)
 {
@@ -1492,11 +1522,17 @@ main(int argc, char ** args)
 	log4c_init();
 	supervisor_children_init();
 	__parse_options(argc, args);
-#if 0
-	(void) supervisor_rights_lose();
-#endif
 
 	close(0);/* We will never read the standard input */
+
+	if (is_gridinit_running(sock_path)) {
+		FATAL("A gridinit is probably already running,"
+			" someone listens to UNIX sock path [%s]", sock_path);
+		g_printerr("A gridinit is probably already running,"
+			" someone listens to UNIX sock path [%s]\n", sock_path);
+		goto label_exit;
+	}
+
 	if (flag_daemon) {
 		if (0 != daemon(1,0)) {
 			FATAL("Failed to daemonize : %s", strerror(errno));
