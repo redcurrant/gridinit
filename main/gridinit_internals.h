@@ -49,6 +49,10 @@
 # define CFG_KEY_INCLUDES "include"
 #endif
 
+#ifndef  CFG_KEY_GROUPSONLY
+# define CFG_KEY_GROUPSONLY "groups_only"
+#endif
+
 int __open_unix_server(const char *path);
 
 int __open_unix_client(const char *path);

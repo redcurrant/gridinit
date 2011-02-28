@@ -72,7 +72,9 @@ static char pidfile_path[1024] = "";
 static char default_working_directory[1024] = "";
 static char *config_path = NULL;
 static char *config_subdir = NULL;
-static char **groups_only = NULL;
+
+static char **groups_only_cli = NULL;
+static char **groups_only_cfg = NULL;
 
 static volatile int flag_quiet = 0;
 static volatile int flag_daemon = 0;
@@ -94,6 +96,40 @@ static struct event timer_event;
 
 static void timer_event_arm(gboolean first);
 static void timer_event_cb(int i, short s, void *p);
+
+static void
+_str_set_array(gboolean concat, gchar ***dst, gchar *str)
+{
+	gchar **tokens, **t;
+
+	if (!concat && *dst != NULL) {
+		g_strfreev(*dst);
+		*dst = NULL;
+	}
+		
+	if (!(tokens = g_strsplit(str, ",", 0))) {
+		FATAL("split error");
+		abort();
+		return;
+	}
+
+	if (!*dst)
+		*dst = g_malloc0(2 * sizeof(gchar *));
+
+	for (t=tokens; *t ;t++) {
+		gchar **new_array = NULL;
+		size_t len;
+
+		len = g_strv_length(*dst);
+		new_array = g_realloc(*dst, sizeof(gchar *) * (len+2));
+		new_array[len] = g_strdup(*t);
+		new_array[len+1] = NULL;
+		*dst = new_array;
+		TRACE("Managing group [%s]", new_array[len]);
+	}
+
+	g_strfreev(tokens);
+}
 
 static void
 timer_event_cb(int i, short s, void *p)
@@ -991,19 +1027,19 @@ exit:
 static gboolean
 _group_is_accepted(gchar *str_key, gchar *str_group)
 {
-	gchar **p_group;
+	gchar **p_group, **which;
 
-	if (!groups_only || !groups_only[0]) {
+	if (!groups_only_cli && !groups_only_cfg) {
 		TRACE("Service [%s] accepted : gridinit not restricted to some groups", str_key);
 		return TRUE;
 	}
-
 	if (!str_group) {
 		DEBUG("Service [%s] ignored : no group provided", str_key);
 		return FALSE;
 	}
 
-	for (p_group=groups_only; *p_group ;p_group++) {
+	which = groups_only_cli ? groups_only_cli : groups_only_cfg;
+	for (p_group=which; *p_group ;p_group++) {
 		if (0 == g_ascii_strcasecmp(*p_group, str_group)) {
 			TRACE("Service [%s] accepted : belongs to an allowed group", str_key);
 			return TRUE;
@@ -1271,6 +1307,9 @@ _cfg_section_default(GKeyFile *kf, const gchar *section, GError **err)
 			bzero(buf_includes, sizeof(buf_includes));
 			g_strlcpy(buf_includes, str, sizeof(buf_includes)-1);
 		}
+		else if (!g_ascii_strcasecmp(*p_key, CFG_KEY_GROUPSONLY)) {
+			_str_set_array(FALSE, &groups_only_cfg, str);
+		}
 
 		g_free(str);
 	}
@@ -1462,16 +1501,8 @@ __parse_options(int argc, char ** args)
 					g_printerr("Expected argument to the '-g' option\n");
 					exit(1);
 				}
-				else {
-					gchar **new_array = NULL;
-					size_t len;
-					if (!groups_only)
-						groups_only = g_malloc0(2 * sizeof(gchar *));
-					len = g_strv_length(groups_only);
-					new_array = g_realloc(groups_only, sizeof(gchar *) * (len+2));
-					new_array[len] = g_strdup(optarg);
-					new_array[len+1] = NULL;
-				}
+				else
+					_str_set_array(TRUE, &groups_only_cli, optarg);
 				break;
 			case 'q':
 				flag_quiet = ~0;
@@ -1573,7 +1604,8 @@ main(int argc, char ** args)
 			event_reinit(libevents_handle);
 	}
 
-	groups_only = NULL;
+	groups_only_cli = NULL;
+	groups_only_cfg = NULL;
 	bzero(sock_path, sizeof(sock_path));
 	bzero(pidfile_path, sizeof(pidfile_path));
 	bzero(default_working_directory, sizeof(default_working_directory));
