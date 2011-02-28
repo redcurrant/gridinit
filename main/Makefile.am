@@ -5,10 +5,9 @@ CFLAGS = -std=gnu99
 CFLAGS+= -D_REENTRANT
 CFLAGS+= -D_LARGEFILE64_SOURCE
 CFLAGS+= -D_FILE_OFFSET_BITS=64
-#CFLAGS+= -O2
-CFLAGS+= -O0 -fno-inline
+CFLAGS+= -O2
+#CFLAGS+= -O0 -fno-inline -DHAVE_EXTRA_DEBUG=1
 CFLAGS+= -g
-CFLAGS+= -DHAVE_EXTRA_DEBUG=1
 CFLAGS+= -Wall -Wextra -Werror
 CFLAGS+= -Wimplicit-function-declaration
 #CFLAGS+= -Wold-style-definition

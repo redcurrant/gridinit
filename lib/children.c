@@ -138,8 +138,10 @@ _child_set_flag(struct child_s *sd, guint32 mask, gboolean enabled)
 	errno = 0;
 	if (enabled) {
 
-		if (mask & MASK_STARTED)
+		if (mask & MASK_STARTED) {
+			sd->last_start_attempt = 0;
 			_child_reset_deaths(sd);
+		}
 
 		if (FLAG_HAS(sd,mask))
 			return 0;
@@ -457,11 +459,11 @@ _child_notify_death(struct child_s *sd)
 	}
 }
 
-static gboolean
+static inline gboolean
 _child_should_be_up(struct child_s *sd)
 {
 	return !(FLAG_HAS(sd,MASK_BROKEN) || FLAG_HAS(sd,MASK_DISABLED) || FLAG_HAS(sd,MASK_OBSOLETE))
-		&& FLAG_HAS(sd,MASK_STARTED);
+		&& FLAG_HAS(sd, MASK_STARTED);
 }
 
 static void
@@ -482,13 +484,21 @@ _child_can_be_restarted(struct child_s *sd)
 {
 	time_t now;
 
-	if (!_child_should_be_up(sd) || !FLAG_HAS(sd,MASK_RESPAWN))
+	if (!_child_should_be_up(sd))
 		return FALSE;
 
+ 	if (!sd->last_start_attempt)
+		return TRUE;
+
+	/* here : already been started */
+	if (!FLAG_HAS(sd,MASK_RESPAWN))
+		return FALSE;
+
+	/* here : restart allowed */
 	if (!FLAG_HAS(sd,MASK_DELAYED))	
 		return TRUE;
 
-	/* Variable temporisation */
+	/* here : restart delayed if died too early */
 	now = time(0);
 
 	_child_debug(sd, "DEAD");
@@ -568,8 +578,8 @@ supervisor_children_start_enabled(void *udata, supervisor_cb_f cb)
 				_child_notify_death(sd);
 		}
 
-		if (sd->pid < 1) {
-			if (_child_can_be_restarted(sd)) {
+		if (sd->pid <= 0) {
+			if (_child_should_be_up(sd) && _child_can_be_restarted(sd)) {
 				if (0 == _child_start(sd, udata, cb))
 					count ++;
 			}
@@ -725,12 +735,12 @@ supervisor_children_fini(void)
 gboolean
 supervisor_children_register(const gchar *key, const gchar *cmd, GError **error)
 {
-	struct child_s *sd;
+	struct child_s *sd = NULL;
 
 	(void) error;
 
 	/*check if the service is present*/
-	for (sd=SRV_BEACON.next; sd && sd!=&SRV_BEACON ;sd=sd->next) {
+	FOREACH_CHILD(sd) {
 		if (0 == g_ascii_strcasecmp(sd->key, key)) {
 
 			/* the command might have changed */
@@ -836,16 +846,25 @@ supervisor_children_enable(const char *key, gboolean enable)
 		return -1;
 	}
 
-	/* If the process is being disabled, there is no need to
-	 * keep the BROKEN flag. This flag would survive a later
-	 * re-enabling of the process... */
-	if (!enable)
+	if (!enable) {
+		/* If the process is being disabled, there is no need to
+		 * keep the BROKEN flag. This flag would survive a later
+		 * re-enabling of the process... */
 		_child_set_flag(sd, MASK_BROKEN, FALSE);
 
-	/* If a processus is enabled and if it is has never been started,
-	 * We ask to start it the next turn */
-	if (enable && !sd->last_start_attempt)
+		/* We reset the 'last_start_attempt' field. This is necessary
+		 * to explicitely restart services confiured with the 'cry'
+		 * or 'exit' value for their 'on_die' parameter */
+		sd->last_start_attempt = 0;
+
+		/* Then we ask to stop the service */
+		_child_set_flag(sd, MASK_STARTED, FALSE);
+	}
+	else {
+		/* If a processus is enabled and if it has never been started,
+		 * We ask to start it the next turn */
 		_child_set_flag(sd, MASK_STARTED, TRUE);
+	}
 
 	errno = 0;
 	return _child_set_flag(sd, MASK_DISABLED, !enable);

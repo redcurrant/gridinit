@@ -3,8 +3,8 @@ CFLAGS+= -D_REENTRANT
 CFLAGS+= -D_LARGEFILE64_SOURCE
 CFLAGS+= -D_FILE_OFFSET_BITS=64
 CFLAGS+= -O2
+#CFLAGS+= -O0 -fno-inline -D HAVE_EXTRA_DEBUG=1
 CFLAGS+= -g
-CFLAGS+= -D HAVE_EXTRA_DEBUG=1
 CFLAGS+= -Wall -Wextra -Werror
 CFLAGS+= -Wimplicit-function-declaration
 #CFLAGS+= -Wold-style-definition

@@ -72,6 +72,7 @@ static char pidfile_path[1024] = "";
 static char default_working_directory[1024] = "";
 static char *config_path = NULL;
 static char *config_subdir = NULL;
+static char **groups_only = NULL;
 
 static volatile int flag_quiet = 0;
 static volatile int flag_daemon = 0;
@@ -829,6 +830,21 @@ signals_clean(void)
 
 /* Configuration ----------------------------------------------------------- */
 
+static void
+main_usage(void)
+{
+	if (flag_quiet)
+		return;
+	g_printerr("\n"
+		"Usage: %s [OPTIONS] ... CONFIG_PATH [LOG4C_PATH]\n"
+		" with OPTIONS:\n"
+		"    -h       : displays this help section\n"
+		"    -g GROUP : limits the services loading to those belonging to\n"
+		"               the specified group. This option can be repeated.\n"
+		"    -q       : quiet mode, suppress non-error output\n"
+		"\n", g_get_prgname());
+}
+
 static gboolean
 _cfg_value_is_true(const gchar *val)
 {
@@ -973,6 +989,32 @@ exit:
 }
 
 static gboolean
+_group_is_accepted(gchar *str_key, gchar *str_group)
+{
+	gchar **p_group;
+
+	if (!groups_only || !groups_only[0]) {
+		TRACE("Service [%s] accepted : gridinit not restricted to some groups", str_key);
+		return TRUE;
+	}
+
+	if (!str_group) {
+		DEBUG("Service [%s] ignored : no group provided", str_key);
+		return FALSE;
+	}
+
+	for (p_group=groups_only; *p_group ;p_group++) {
+		if (0 == g_ascii_strcasecmp(*p_group, str_group)) {
+			TRACE("Service [%s] accepted : belongs to an allowed group", str_key);
+			return TRUE;
+		}
+	}
+
+	DEBUG("Service [%s] ignored : group not managed", str_key);
+	return FALSE;
+}
+
+static gboolean
 _cfg_section_service(GKeyFile *kf, const gchar *section, GError **err)
 {
 	GSList *gc = NULL;
@@ -994,6 +1036,11 @@ _cfg_section_service(GKeyFile *kf, const gchar *section, GError **err)
 	str_limit_core = __get_and_enlist(&gc, kf, section, CFG_KEY_LIMIT_CORESIZE);
 	str_limit_stack = __get_and_enlist(&gc, kf, section, CFG_KEY_LIMIT_STACKSIZE);
 	str_wd = __get_and_enlist(&gc, kf, section, CFG_KEY_PATH_WORKINGDIR);
+
+	if (!_group_is_accepted(str_key, str_group)) {
+		rc = TRUE;
+		goto label_exit;
+	}
 
 	if (!supervisor_children_register(str_key, str_command, err))
 		goto label_exit;
@@ -1405,12 +1452,26 @@ __parse_options(int argc, char ** args)
 	int c;
 	GError *error_local = NULL;
 
-	bzero(pidfile_path, sizeof(pidfile_path));
-
-	while (-1 != (c = getopt(argc, args, "qd"))) {
+	while (-1 != (c = getopt(argc, args, "qdg:"))) {
 		switch (c) {
 			case 'd':
 				flag_daemon = ~0;
+				break;
+			case 'g':
+				if (!optarg) {
+					g_printerr("Expected argument to the '-g' option\n");
+					exit(1);
+				}
+				else {
+					gchar **new_array = NULL;
+					size_t len;
+					if (!groups_only)
+						groups_only = g_malloc0(2 * sizeof(gchar *));
+					len = g_strv_length(groups_only);
+					new_array = g_realloc(groups_only, sizeof(gchar *) * (len+2));
+					new_array[len] = g_strdup(optarg);
+					new_array[len+1] = NULL;
+				}
 				break;
 			case 'q':
 				flag_quiet = ~0;
@@ -1424,8 +1485,7 @@ __parse_options(int argc, char ** args)
 	
 	/* check for additionnal arguments */
 	if (optind >= argc) {
-		if (!flag_quiet)
-			g_printerr("Usage: %s [OPTIONS]... CONFIG_PATH [LOG4C_PATH]\n", args[0]);
+		main_usage();
 		exit(1);
 	}
 	
@@ -1513,6 +1573,7 @@ main(int argc, char ** args)
 			event_reinit(libevents_handle);
 	}
 
+	groups_only = NULL;
 	bzero(sock_path, sizeof(sock_path));
 	bzero(pidfile_path, sizeof(pidfile_path));
 	bzero(default_working_directory, sizeof(default_working_directory));
@@ -1575,7 +1636,7 @@ main(int argc, char ** args)
 		guint proc_count;
 
 		/* start all the enabled processes */
-		proc_count = supervisor_children_startall(NULL, alert_proc_started);
+		proc_count = supervisor_children_start_enabled(NULL, alert_proc_started);
 		DEBUG("First started %u processes", proc_count);
 
 		while (flag_running) {
