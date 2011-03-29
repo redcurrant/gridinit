@@ -16,15 +16,17 @@ CFLAGS+= -Wsequence-point
 CFLAGS+= -Wstrict-prototypes
 CFLAGS+= -Wunused
 CFLAGS+= -DG_ERRORCHECK_MUTEXES -DG_DISABLE_DEPRECATED=1 $(GLIB_CFLAGS)
-CFLAGS+= `pkg-config --cflags libevent`
 
-CFLAGS+= -I. -I.. -I../lib -I@LIBEVENT_DIR@/include
+CFLAGS+= -I.
+CFLAGS+= -I..
+CFLAGS+= -I../lib
+#CFLAGS+= -I@LIBEVENT_DIR@/include
 
-LDFLAGS = -L@LIBEVENT_LIBDIR@
-LDFLAGS+= `pkg-config --libs libevent`
+#LDFLAGS = -L@LIBEVENT_LIBDIR@
 
 gridinit_SOURCES = gridinit.c cnx.c alerting.c gridinit_alerts.h gridinit_internals.h
-gridinit_LDADD = -llog4c $(GLIB_LIBS) ../lib/libgridinit-utils.la
+gridinit_LDADD = -llog4c $(GLIB_LIBS) @LIBEVENT_LIBS@ ../lib/libgridinit-utils.la
+gridinit_CFLAGS = @LIBEVENT_CFLAGS@
 
 gridinit_cmd_SOURCES = gridinit_cmd.c cnx.c gridinit_internals.h
 gridinit_cmd_LDADD = -llog4c $(GLIB_LIBS)

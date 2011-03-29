@@ -69,6 +69,11 @@ AC_CHECK_FILE([$LIBEVENT_DIR/include/event.h],,[AC_MSG_ERROR([not found])])
 AC_SUBST(LIBEVENT_DIR)
 AC_SUBST(LIBEVENT_LIBDIR)
 
+LIBEVENT_LIBS=`pkg-config --libs libevent`
+AC_SUBST(LIBEVENT_LIBS)
+LIBEVENT_CFLAGS=`pkg-config --cflags libevent`
+AC_SUBST(LIBEVENT_CFLAGS)
+
 # Check grid metautils
 AC_ARG_WITH([metautils],
   AS_HELP_STRING([--with-metautils=DIR],
@@ -103,7 +108,7 @@ AM_CONDITIONAL([SYSMM_ENABLED], [test x$sysmm_enabled = xtrue])
 
 # Checks for libraries.
 AM_PATH_LOG4C
-AM_PATH_GLIB_2_0(2.16.0,,AC_MSG_ERROR(glib version >= 2.16 required),[gmodule gthread])
+AM_PATH_GLIB_2_0(2.18.0,,AC_MSG_ERROR(glib version >= 2.18 required),[gmodule gthread])
 
 # Checks for header files.
 AC_HEADER_DIRENT
