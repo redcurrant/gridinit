@@ -1,9 +1,9 @@
 [Default]
-listen=/var/run/gridinit.sock
-pidfile=/var/run/gridinit.pid
+listen=/GRID/common/run/gridinit.sock
+pidfile=/GRID/common/run/gridinit.pid
 uid=admgrid
 gid=admgrid
-working_dir=/var/run
+working_dir=/GRID/common/core
 #env.PATH=/bin:/usr/bin:/usr/local/bin
 #env.LD_LIBRARY_PATH=/lib:/usr/lib
 
