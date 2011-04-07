@@ -83,25 +83,23 @@ struct keyword_set_s {
 };
 
 static struct keyword_set_s KEYWORDS_NORMAL = {
-	"ALREADY",
-	"DONE",
-	"FAILED",
-
-	"BROKEN",
-	"DOWN",
+	"ALREADY ",
+	"DONE    ",
+	"FAILED  ",
+	"BROKEN  ",
+	"DOWN    ",
 	"DISABLED",
-	"UP"
+	"UP      "
 };
 
 static struct keyword_set_s KEYWORDS_COLOR = {
-	"[33mALREADY[0m",
-	"[32mDONE[0m",
-	"[31mFAILED[0m",
-
-	"[31mBROKEN[0m",
-	"[33mDOWN[0m",
-	"[0mDISABLED[0m",
-	"[32mUP[0m"
+	"[33mALREADY[0m ",
+	"[32mDONE[0m    ",
+	"[31mFAILED[0m  ",
+	"[31mBROKEN[0m  ",
+	"[33mDOWN[0m    ",
+	"[36mDISABLED[0m",
+	"[32mUP[0m      "
 };
 
 static gint
@@ -296,29 +294,29 @@ dump_status(FILE *in_stream, void *udata)
 	switch (status_args->how) {
 	case MINI:
 		g_snprintf(fmt_title, sizeof(fmt_title),
-				"%%-%us %%8s %%6s %%s\n",
+				"%%-%us %%-8s %%6s %%s\n",
 				(guint)maxkey);
 		g_snprintf(fmt_line, sizeof(fmt_line),
-				"%%-%us %%8s %%6d %%s\n",
+				"%%-%us %%s %%6d %%s\n",
 				(guint)maxkey);
 		fprintf(stdout, fmt_title, "KEY", "STATUS", "PID", "GROUP");
 		break;
 	case MEDIUM:
 		g_snprintf(fmt_title, sizeof(fmt_title),
-				"%%-%us %%8s %%5s %%6s %%5s %%19s %%%us %%s\n",
+				"%%-%us %%-8s %%5s %%6s %%5s %%19s %%%us %%s\n",
 				(guint)maxkey, (guint)maxgroup);
 		g_snprintf(fmt_line, sizeof(fmt_line),
-				"%%-%us %%8s %%5d %%6d %%5d %%19s %%%us %%s\n",
+				"%%-%us %%s %%5d %%6d %%5d %%19s %%%us %%s\n",
 				(guint)maxkey, (guint)maxgroup);
 		fprintf(stdout, fmt_title, "KEY", "STATUS", "PID", "#START",
 				"#DIED", "SINCE", "GROUP", "CMD");
 		break;
 	default:
 		g_snprintf(fmt_title, sizeof(fmt_title),
-				"%%-%us %%8s %%5s %%6s %%5s %%8s %%8s %%8s %%19s %%%us %%s\n",
+				"%%-%us %%-8s %%5s %%6s %%5s %%8s %%8s %%8s %%19s %%%us %%s\n",
 				(guint)maxkey, (guint)maxgroup);
 		g_snprintf(fmt_line, sizeof(fmt_line),
-				"%%-%us %%8s %%5d %%6d %%5d %%8ld %%8ld %%8ld %%19s %%%us %%s\n",
+				"%%-%us %%s %%5d %%6d %%5d %%8ld %%8ld %%8ld %%19s %%%us %%s\n",
 				(guint)maxkey, (guint)maxgroup);
 
 		fprintf(stdout, fmt_title, "KEY", "STATUS", "PID", "#START",
