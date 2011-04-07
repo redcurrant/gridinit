@@ -271,6 +271,18 @@ _child_restore_rlimits(struct my_rlimits_s *save)
 	(void) supervisor_limit_set(SUPERV_LIMIT_CORE_SIZE,    save->core_size);
 }
 
+static void
+my_clear_env(void)
+{
+	gchar **old_env, **e;
+	old_env = g_listenv();
+	if (old_env) {
+		for (e=old_env; *e ;e++)
+			g_unsetenv(*e);
+		g_strfreev(old_env);
+	}
+}
+
 /**
  * Must be called after the fork, from the child, just befoe the execve
  */
@@ -280,43 +292,53 @@ _child_build_env(struct child_s *sd)
 	int i;
 	char **new_env;
 	GSList *l;
-	gchar *k, *v;
+	gchar *s, *k, *v;
 
-	new_env = calloc(1 + g_slist_length(sd->env), sizeof(char**));
+	my_clear_env();
 
-	/* GLib-styled clearenv */
-	do {
-		gchar ** old_env, **e;
-		old_env = g_listenv();
-		if (old_env) {
-			for (e=old_env; e && *e ;e++)
-				g_unsetenv(*e);
-			g_strfreev(old_env);
-		}
-	} while (0);
+	new_env = calloc(1 + g_slist_length(sd->env), sizeof(char*));
 
-	/* Set the new environment, and prepare it for the exec */
+	/* Run the configured environement */
 	for (i=0, l=sd->env; l && l->next ;l=l->next->next) {
 		k = l->data;
 		v = l->next->data;
-		if (k && v) {
-			gchar *s;
-			/* set ... */
-			if (!g_setenv(k, v, TRUE)) {
-				WARN("g_setenv(%s,%s) error : %s", k, v, strerror(errno));
-			} else {
-				/* ... and prepare */
-				s = g_strdup_printf("%s=%s", k, v);
-				if (NULL != (new_env[i] = strdup(s))) {
-					i++;
-					g_free(s);
-					DEBUG("[%s] setenv(%s,%s)", sd->key, k, v);
-				}
-			}
-		}
+		if (!k || !v)
+			continue;
+
+		/* set the current env ... */
+		if (!g_setenv(k, v, TRUE))
+			WARN("g_setenv(%s,%s) error : %s", k, v, strerror(errno));
+
+		/* ... and prepare the child's env */
+		s = g_strdup_printf("%s=%s", k, v);
+		new_env[i++] = strdup(s);
+		g_free(s);
+		DEBUG("[%s] setenv(%s,%s)", sd->key, k, v);
 	}
 
 	return new_env;
+}
+
+static void
+_child_exec(struct child_s *sd, int argc, char ** args)
+{
+	char **env;
+	const gchar *cmd = args[0];
+	gchar *real_cmd;
+
+	(void) argc;
+	/* IF the target command is just a filename, then try to find
+	 * it in the PATH that could have been set for this command */
+	env = _child_build_env(sd);
+	supervisor_children_cleanall();
+
+	if (NULL == (real_cmd = g_find_program_in_path(cmd)))
+		FATAL("'%s' not found in PATH:%s", cmd, g_getenv("PATH"));
+	else {
+		DEBUG("execve(%s) ... bye!", real_cmd);
+		execve(real_cmd, args, env);
+		FATAL("exec failed : errno=%d %s", errno, strerror(errno));
+	}
 }
 
 /**
@@ -329,7 +351,6 @@ _child_start(struct child_s *sd, void *udata, supervisor_cb_f cb)
 	typeof(errno) errsav;
 	gint argc;
 	gchar **args;
-	char **env;
 	pid_t pid_father;
 	struct my_rlimits_s saved_limits;
 	
@@ -390,22 +411,7 @@ _child_start(struct child_s *sd, void *udata, supervisor_cb_f cb)
 			}
 		}
 
-		env = _child_build_env(sd);
-		supervisor_children_cleanall();
-
-		do {
-		/* IF the target command is just a filename, then try to find
-		 * it in the PATH that could have been set for this command */
-			const gchar *cmd = args[0];
-			if (!g_path_is_absolute(cmd)) {
-				gchar *dirname = g_path_get_dirname(cmd);
-				if (*dirname == '.')
-					cmd = g_find_program_in_path(cmd);
-				g_free(dirname);
-			}
-			execve(cmd, args, env);
-		} while (0);
-
+		_child_exec(sd, argc, args);
 		exit(-1);
 		return 0;/*makes everybody happy*/
 
@@ -768,10 +774,13 @@ supervisor_children_register(const gchar *key, const gchar *cmd, GError **error)
 	sd->uid = getuid();
 	sd->gid = getgid();
 
-	/* set the system limits */
+	/* set the system limits to the current values */
 	sd->rlimits.core_size = -1;
-	sd->rlimits.stack_size = 8192 * 1024;
+	sd->rlimits.stack_size = 1024 * 1024;
 	sd->rlimits.nb_files = 32768;
+	(void) supervisor_limit_get(SUPERV_LIMIT_THREAD_STACK, &(sd->rlimits.stack_size));
+	(void) supervisor_limit_get(SUPERV_LIMIT_MAX_FILES,    &(sd->rlimits.nb_files));
+	(void) supervisor_limit_get(SUPERV_LIMIT_CORE_SIZE,    &(sd->rlimits.core_size));
 	
 	/*ring insertion*/
 	sd->next = SRV_BEACON.next;
@@ -931,6 +940,7 @@ supervisor_children_set_limit(const gchar *key, enum supervisor_limit_e what, gi
 		return -1;
 	}
 
+	DEBUG("Setting rlimit [%d] to [%"G_GINT64_FORMAT"] for key [%s]", what, value, key);
 	errno = 0;
 	switch (what) {
 		case SUPERV_LIMIT_THREAD_STACK:
