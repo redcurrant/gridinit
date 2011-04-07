@@ -1142,7 +1142,7 @@ _cfg_section_service(GKeyFile *kf, const gchar *section, GError **err)
 	/* alternative limits */
 	if (str_limit_stack) {
 		gint64 i64 = g_ascii_strtoll(str_limit_stack, NULL, 10);
-		supervisor_children_set_limit(str_key, SUPERV_LIMIT_THREAD_STACK, i64 * 1024);
+		supervisor_children_set_limit(str_key, SUPERV_LIMIT_THREAD_STACK, i64 * 1024LL);
 	}
 	if (str_limit_fd) {
 		gint64 i64 = g_ascii_strtoll(str_limit_fd, NULL, 10);
@@ -1150,7 +1150,7 @@ _cfg_section_service(GKeyFile *kf, const gchar *section, GError **err)
 	}
 	if (str_limit_core) {
 		gint64 i64 = g_ascii_strtoll(str_limit_core, NULL, 10);
-		supervisor_children_set_limit(str_key, SUPERV_LIMIT_CORE_SIZE, i64 * 1024 * 1024);
+		supervisor_children_set_limit(str_key, SUPERV_LIMIT_CORE_SIZE, i64 * 1024LL * 1024LL);
 	}
 	
 	/* Explicit working directory */
@@ -1243,9 +1243,9 @@ _cfg_section_default(GKeyFile *kf, const gchar *section, GError **err)
 	gchar buf_user[256]="", buf_group[256]="";
 	gchar buf_uid[256]="", buf_gid[256]="";
 	gchar buf_includes[1024]="";
-	gint64 limit_thread_stack = 1024;
-	gint64 limit_core_size = -1;
-	gint64 limit_nb_files = 8192;
+	gint64 limit_thread_stack = 1024LL * 1024LL;
+	gint64 limit_core_size = -1LL;
+	gint64 limit_nb_files = 8192LL * 1024LL * 1024LL;
 	gchar **p_key, **keys;
 
 	keys = g_key_file_get_keys(kf, section, NULL, err);
@@ -1259,19 +1259,19 @@ _cfg_section_default(GKeyFile *kf, const gchar *section, GError **err)
 		str = g_key_file_get_string(kf, section, *p_key, NULL);
 
 		if (!g_ascii_strcasecmp(*p_key, CFG_KEY_LIMIT_CORESIZE)) {
-			limit_core_size = g_ascii_strtoll(str, NULL, 10);
+			limit_core_size = g_ascii_strtoll(str, NULL, 10) * 1024LL * 1024LL;
+		}
+		else if (!g_ascii_strcasecmp(*p_key, CFG_KEY_LIMIT_NBFILES)) {
+			limit_nb_files = g_ascii_strtoll(str, NULL, 10);
+		}
+		else if (!g_ascii_strcasecmp(*p_key, CFG_KEY_LIMIT_STACKSIZE)) {
+			limit_thread_stack = g_ascii_strtoll(str, NULL, 10) * 1024LL;
 		}
 		else if (!g_ascii_strcasecmp(*p_key, CFG_KEY_PATH_WORKINGDIR)) {
 			if (!g_file_test(*p_key, G_FILE_TEST_IS_DIR|G_FILE_TEST_IS_EXECUTABLE))
 				WARN("Default working directory does not exist yet [%s]", *p_key);
 			bzero(default_working_directory, sizeof(default_working_directory));
 			g_strlcpy(default_working_directory, str, sizeof(default_working_directory)-1);
-		}
-		else if (!g_ascii_strcasecmp(*p_key, CFG_KEY_LIMIT_NBFILES)) {
-			limit_nb_files = g_ascii_strtoll(str, NULL, 10);
-		}
-		else if (!g_ascii_strcasecmp(*p_key, CFG_KEY_LIMIT_STACKSIZE)) {
-			limit_thread_stack = g_ascii_strtoll(str, NULL, 10);
 		}
 		else if (!g_ascii_strcasecmp(*p_key, CFG_KEY_PATH_PIDFILE)) {
 			bzero(pidfile_path, sizeof(pidfile_path));
@@ -1316,9 +1316,11 @@ _cfg_section_default(GKeyFile *kf, const gchar *section, GError **err)
 	g_strfreev(keys);
 
 	/* Set the defautl limits for the services (apply them directly to the gridinit itself) */
-	(void) supervisor_limit_set(SUPERV_LIMIT_CORE_SIZE, limit_core_size * 1024 * 1024);
-	(void) supervisor_limit_set(SUPERV_LIMIT_MAX_FILES, limit_nb_files);
-	(void) supervisor_limit_set(SUPERV_LIMIT_THREAD_STACK, limit_thread_stack * 1024);
+	int rc0 = supervisor_limit_set(SUPERV_LIMIT_CORE_SIZE, limit_core_size);
+	int rc1 = supervisor_limit_set(SUPERV_LIMIT_MAX_FILES, limit_nb_files);
+	int rc2 = supervisor_limit_set(SUPERV_LIMIT_THREAD_STACK, limit_thread_stack);
+	INFO("Set gridinit limits to [%"G_GINT64_FORMAT", %"G_GINT64_FORMAT", %"G_GINT64_FORMAT"] (%d,%d,%d)",
+			limit_core_size, limit_nb_files, limit_thread_stack, rc0, rc1, rc2);
 
 	/* Loads the default UID/GID for the services*/
 	if ((*buf_user || *buf_uid) && (*buf_group || *buf_gid)) {
