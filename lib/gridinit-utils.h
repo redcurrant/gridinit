@@ -117,7 +117,7 @@ int supervisor_children_enable(const char *key, gboolean enable);
 int supervisor_children_set_respawn(const char *key, gboolean enabled);
 
 /**
- * Marks he service to be started or stopped
+ * Marks the service to be started or stopped.
  */
 int supervisor_children_status(const char *key, gboolean to_be_started);
 

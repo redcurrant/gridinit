@@ -585,7 +585,7 @@ supervisor_children_start_enabled(void *udata, supervisor_cb_f cb)
 		}
 
 		if (sd->pid <= 0) {
-			if (_child_should_be_up(sd) && _child_can_be_restarted(sd)) {
+			if (_child_can_be_restarted(sd)) {
 				if (0 == _child_start(sd, udata, cb))
 					count ++;
 			}
@@ -626,7 +626,6 @@ supervisor_children_disable_obsolete(void)
 	FOREACH_CHILD(sd) {
 		if (FLAG_HAS(sd,MASK_OBSOLETE)) {
 			FLAG_SET(sd, MASK_DISABLED);
-			FLAG_DEL(sd, MASK_STARTED);
 			count ++;
 		}
 	}
@@ -767,7 +766,7 @@ supervisor_children_register(const gchar *key, const gchar *cmd, GError **error)
 	}
 
 	g_strlcpy(sd->key, key, sizeof(sd->key)-1);
-	sd->flags = MASK_RESPAWN|MASK_DELAYED;
+	sd->flags = MASK_STARTED|MASK_RESPAWN|MASK_DELAYED;
 	sd->working_directory = g_get_current_dir();
 	sd->command = g_strdup(cmd);
 	sd->pid = -1;
@@ -821,12 +820,7 @@ supervisor_children_kill_disabled(void)
 	count = 0U;
 
 	FOREACH_CHILD(sd) {
-		if (!_child_should_be_up(sd))
-			FLAG_DEL(sd,MASK_STARTED);
-	}
-
-	FOREACH_CHILD(sd) {
-		if (!FLAG_HAS(sd,MASK_STARTED)) {
+		if (!_child_should_be_up(sd)) {
 			if (sd->pid > 0) {
 				_child_stop(sd);
 				count ++;
@@ -865,14 +859,6 @@ supervisor_children_enable(const char *key, gboolean enable)
 		 * to explicitely restart services confiured with the 'cry'
 		 * or 'exit' value for their 'on_die' parameter */
 		sd->last_start_attempt = 0;
-
-		/* Then we ask to stop the service */
-		_child_set_flag(sd, MASK_STARTED, FALSE);
-	}
-	else {
-		/* If a processus is enabled and if it has never been started,
-		 * We ask to start it the next turn */
-		_child_set_flag(sd, MASK_STARTED, TRUE);
 	}
 
 	errno = 0;

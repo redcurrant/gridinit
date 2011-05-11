@@ -1051,20 +1051,32 @@ _group_is_accepted(gchar *str_key, gchar *str_group)
 }
 
 static gboolean
+_service_exists(const gchar *key)
+{
+	struct child_info_s ci;
+
+	bzero(&ci, sizeof(ci));
+	return 0 == supervisor_children_get_info(key, &ci);
+}
+
+static gboolean
 _cfg_section_service(GKeyFile *kf, const gchar *section, GError **err)
 {
 	GSList *gc = NULL;
-	gboolean rc = FALSE, rc_enable;
+	gboolean rc = FALSE, already_exists;
 	gchar *str_key;
-	gchar *str_command, *str_enabled, *str_ondie, *str_uid, *str_gid,
-		*str_limit_stack, *str_limit_core, *str_limit_fd, *str_wd,
-		*str_group;
+	gchar *str_command, *str_enabled, *str_startatboot, *str_ondie,
+		*str_uid, *str_gid,
+		*str_limit_stack, *str_limit_core, *str_limit_fd,
+		*str_wd, *str_group;
+	gint32 uid, gid;
 
-	str_key = strchr(section, '.');
-	str_key ++;
+	uid = gid = -1;
+	str_key = strchr(section, '.') + 1;
 	str_command = __get_and_enlist(&gc, kf, section, "command");
 	str_enabled = __get_and_enlist(&gc, kf, section, "enabled");
 	str_ondie = __get_and_enlist(&gc, kf, section, "on_die");
+	str_startatboot = __get_and_enlist(&gc, kf, section, "start_at_boot");
 	str_uid = __get_and_enlist(&gc, kf, section, CFG_KEY_UID);
 	str_gid = __get_and_enlist(&gc, kf, section, CFG_KEY_GID);
 	str_group = __get_and_enlist(&gc, kf, section, CFG_KEY_GROUP);
@@ -1073,30 +1085,63 @@ _cfg_section_service(GKeyFile *kf, const gchar *section, GError **err)
 	str_limit_stack = __get_and_enlist(&gc, kf, section, CFG_KEY_LIMIT_STACKSIZE);
 	str_wd = __get_and_enlist(&gc, kf, section, CFG_KEY_PATH_WORKINGDIR);
 
+	/* Perform some sanity checks on the given values, to avoid registering
+	 * partially setup services */
 	if (!_group_is_accepted(str_key, str_group)) {
 		rc = TRUE;
 		goto label_exit;
 	}
+	if (str_uid && str_gid && *str_uid && *str_uid) {
+
+		if (!uid_exists(str_uid, &uid)) {
+			/* Invalid user */
+			*err = g_error_printf(LOG_DOMAIN, EINVAL, "Service [%s] cannot cannot receive UID [%s] : errno=%d %s",
+		                        str_key, str_uid, errno, strerror(errno));
+			goto label_exit;
+		}
+		if (!gid_exists(str_gid, &gid)) {
+			/* Invalid group */
+			*err = g_error_printf(LOG_DOMAIN, EINVAL, "Service [%s] cannot cannot receive GID [%s] : errno=%d %s",
+		                        str_key, str_gid, errno, strerror(errno));
+			goto label_exit;
+		}
+	}
+
+	/* Stat the service and check it is already running.
+	 * This is used to avoid changing the started/stopped status
+	 * of an existing service, i.e. when its configuration is
+	 * being reloaded. */
+	already_exists = _service_exists(str_key);
 
 	if (!supervisor_children_register(str_key, str_command, err))
 		goto label_exit;
 
-	if (*default_working_directory)
-		supervisor_children_set_working_directory(str_key, default_working_directory);
-
-	/* Enables or not */
-	rc_enable = supervisor_children_enable(str_key, _cfg_value_is_true(str_enabled));
-	if (0 > rc_enable) {
-		*err = g_error_printf(LOG_DOMAIN, EINVAL, "Service [%s] cannot be marked [%s] : rc=%d",
+	/* Enables or not. This is a lock controlled by the configuration
+	 * that overrides all other child states. */
+	if (0 > supervisor_children_enable(str_key, _cfg_value_is_true(str_enabled))) {
+		*err = g_error_printf(LOG_DOMAIN, errno, "Service [%s] cannot be marked [%s] : %s",
 		                        str_key, (_cfg_value_is_true(str_enabled)?"ENABLED":"DISABLED"),
-					rc_enable);
+					strerror(errno));
 		goto label_exit;
 	}
 
-	/* on_die management */
+	if (*default_working_directory) {
+		if (0 > supervisor_children_set_working_directory(str_key, default_working_directory))
+			WARN("Failed to save default working directory for [%s] : %s", str_key, strerror(errno));
+	}
+
+	/* If the service is discovered for the first time, then when
+	 * are allowed to change its 'tobe{started,stopped}' status */
+	if (!already_exists && str_startatboot) {
+		if (0 > supervisor_children_status(str_key, _cfg_value_is_true(str_startatboot)))
+			WARN("Failed to set 'tobestarted/tobestopped' for [%s] : %s", str_key, strerror(errno));
+	}
+
+	/* on_die management. Respawn, cry, or abort */
 	if (str_ondie) {
 		if (0 == g_ascii_strcasecmp(str_ondie, "cry")) {
-			supervisor_children_set_respawn(str_key, FALSE);
+			if (0 > supervisor_children_set_respawn(str_key, FALSE))
+				WARN("Failed to make [%s] respawn : %s", str_key, strerror(errno));
 		}
 		else if (0 == g_ascii_strcasecmp(str_ondie, "exit")) {
 			supervisor_children_set_user_flags(str_key, USERFLAG_ONDIE_EXIT);
@@ -1111,32 +1156,20 @@ _cfg_section_service(GKeyFile *kf, const gchar *section, GError **err)
 		}
 	}
 
-	/* By default set the current uid/gid */
+	/* By default set the current uid/gid, then overwrite this by
+	 * possibly configured default uid/gid  */
 	supervisor_children_set_ids(str_key, getuid(), getgid());
-
-	/* Overwrite this by possibly configured default uid/gid  */
-	if (default_uid>0 && default_gid>0)
-		supervisor_children_set_ids(str_key, default_uid, default_gid);
+	if (default_uid>0 && default_gid>0) {
+		if (0 > supervisor_children_set_ids(str_key, default_uid, default_gid))
+			WARN("Failed to set UID/GID to %d/%d for [%s] : %s",
+					str_key, default_uid, default_uid, strerror(errno));
+	}
 
 	/* explicit user/group pair */
-	if (str_uid && str_gid && *str_uid && *str_uid) {
-		gint32 uid, gid;
-
-		uid = gid = -1;
-		if (!uid_exists(str_uid, &uid)) {
-			/* Invalid user */
-			*err = g_error_printf(LOG_DOMAIN, EINVAL, "Service [%s] cannot cannot receive UID [%s] : errno=%d %s",
-		                        str_key, str_uid, errno, strerror(errno));
-			goto label_exit;
-		}
-		if (!gid_exists(str_gid, &gid)) {
-			/* Invalid group */
-			*err = g_error_printf(LOG_DOMAIN, EINVAL, "Service [%s] cannot cannot receive GID [%s] : errno=%d %s",
-		                        str_key, str_gid, errno, strerror(errno));
-			goto label_exit;
-		}
-	
-		supervisor_children_set_ids(str_key, uid, gid);
+	if (uid >= 0 && gid >= 0) {
+		if (0 > supervisor_children_set_ids(str_key, uid, gid))
+			WARN("Failed to set specific UID/GID to %"G_GINT32_FORMAT"/%"G_GINT32_FORMAT" for [%s] : %s",
+				uid, gid, str_key, strerror(errno));
 	}
 
 	/* alternative limits */
@@ -1158,13 +1191,15 @@ _cfg_section_service(GKeyFile *kf, const gchar *section, GError **err)
 		if (!g_file_test(str_wd, G_FILE_TEST_IS_DIR|G_FILE_TEST_IS_EXECUTABLE))
 			WARN("Explicit working directory for [%s] does not exist yet [%s]",
 				str_key, str_wd);
-		supervisor_children_set_working_directory(str_key, str_wd);
+		if (0 > supervisor_children_set_working_directory(str_key, str_wd))
+			WARN("Failed to set an explicit working directory for [%s] : %s",
+				str_key, strerror(errno));
 	}
 
 	/* Loads the environment */
 	supervisor_children_clearenv(str_key);
 	if (!_cfg_service_load_env(kf, section, str_key, err)) {
-		ERROR("Failed to load environment for service [%s]", str_key);
+		*err = g_error_printf(LOG_DOMAIN, errno, "Failed to load environment for service [%s]", str_key);
 		goto label_exit;
 	}
 
@@ -1584,7 +1619,7 @@ is_gridinit_running(const gchar *path)
 
 	if (rc == 0)
 		return TRUE;
-	if (errno != ECONNREFUSED) {
+	if (errno != ECONNREFUSED && errno != ENOENT) {
 		/* This can be EACCES for bad rights/permissions, EINVAL for
 		 * a design error. */
 		return TRUE;
