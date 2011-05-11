@@ -1562,29 +1562,33 @@ write_pid_file(void)
 
 	fprintf(stream_pidfile, "%d", getpid());
 	fclose(stream_pidfile);
+	INFO("Wrote PID in [%s]", pidfile_path);
 }
 
 static gboolean
 is_gridinit_running(const gchar *path)
 {
 	int rc, usock;
-	struct {
-		struct sockaddr_un sun;
-		gchar padding[512];
-	} addr;
+	struct sockaddr_un sun;
 	
-	bzero(&addr, sizeof(addr));
-	addr.sun.sun_family = AF_UNIX;
-	g_strlcpy(addr.sun.sun_path, path, sizeof(addr.sun.sun_path) + sizeof(addr.padding) -1);
+	bzero(&sun, sizeof(sun));
+	sun.sun_family = AF_UNIX;
+	g_strlcpy(sun.sun_path, path, sizeof(sun.sun_path) - 1);
 
 	if (0 > (usock = socket(PF_UNIX, SOCK_STREAM, 0)))
 		return FALSE;
 
-	rc = connect(usock, (struct sockaddr*)&addr, sizeof(addr));
+	rc = connect(usock, (struct sockaddr*)&sun, sizeof(sun));
 	close(usock);
+	usock = -1;
 
 	if (rc == 0)
 		return TRUE;
+	if (errno != ECONNREFUSED) {
+		/* This can be EACCES for bad rights/permissions, EINVAL for
+		 * a design error. */
+		return TRUE;
+	}
 
 	rc = unlink(path);
 	g_printerr("Removing stalled socket : unlink(%s) = %d : errno = %d (%s)\n",
