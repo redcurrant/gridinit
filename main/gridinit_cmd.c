@@ -37,6 +37,7 @@ struct dump_status_arg_s {
 	char **args;
 	guint count_faulty;
 	guint count_all;
+	guint count_misses;
 };
 
 struct dump_as_is_arg_s {
@@ -270,19 +271,29 @@ dump_status(FILE *in_stream, void *udata)
 	size_t maxkey, maxgroup;
 	struct dump_status_arg_s *status_args;
 	GList *all_jobs = NULL, *l;
+	GHashTable *ht_counts;
 
 	gboolean matches(struct child_info_s *ci, int argc, gchar **args) {
 		int i;
 		gchar *s;
+		gpointer p;
+		gboolean rc;
+
 		if (!*args)
 			return TRUE;
+		rc = FALSE;
 		for (i=0; i<argc && (s=args[i]) ;i++) {
-			if (s[0]=='@' && gridinit_group_in_set(s+1, ci->group))
-				return TRUE;
-			if (s[0]!='@' && !g_ascii_strcasecmp(ci->key, s))
-				return TRUE;
+			p = g_hash_table_lookup(ht_counts, s);
+			if (s[0]=='@' && gridinit_group_in_set(s+1, ci->group)) {
+				*((guint32*)p) = *((guint32*)p) + 1;
+				rc = TRUE;
+			}
+			if (s[0]!='@' && !g_ascii_strcasecmp(ci->key, s)) {
+				*((guint32*)p) = *((guint32*)p) + 1;
+				rc = TRUE;
+			}
 		}
-		return FALSE;
+		return rc;
 	}
 
 	status_args = udata;
@@ -290,6 +301,13 @@ dump_status(FILE *in_stream, void *udata)
 
 	maxkey = get_longest_key(all_jobs);
 	maxgroup = get_longest_group(all_jobs);
+
+	do { /* Prepares a hash of match counters associated to the pattern strings */
+		int i = 0;
+		ht_counts = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+		for (i = 0; i < status_args->argc ; i++)
+			g_hash_table_insert(ht_counts, g_strdup(status_args->args[i]), g_malloc0(sizeof(guint32)));
+	} while (0);
 
 	/* write the title line */
 	switch (status_args->how) {
@@ -371,7 +389,21 @@ dump_status(FILE *in_stream, void *udata)
 	}
 	fflush(stdout);
 
+	/* check that all the input patterns have been used */
+	do {
+		GHashTableIter iter;
+		gpointer k, v;
+		g_hash_table_iter_init(&iter, ht_counts);
+		while (g_hash_table_iter_next(&iter, &k, &v)) {
+			if (!*((guint32*)v)) {
+				g_printerr("# Group/Key [%s] matched no service\n", (gchar*)k);
+				++ status_args->count_misses;
+			}
+		}
+	} while (0);
+
 	/* free anything */
+	g_hash_table_destroy(ht_counts);
 	for (l=all_jobs; l ;l=l->next) {
 		struct child_info_s *ci = l->data;
 		g_free(ci->key);
@@ -466,6 +498,7 @@ command_status(int lvl, int argc, char **args)
 	rc = send_commandv(dump_status, &status_args, 1, real_args);
 	return !rc
 		|| status_args.count_faulty != 0
+		|| status_args.count_misses != 0
 		|| (status_args.argc > 0 && status_args.count_all == 0);
 }
 

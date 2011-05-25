@@ -204,15 +204,19 @@ alert_proc_started(void *udata, struct child_info_s *ci)
 static void
 service_run_groupv(int nb_groups, char **groupv, void *udata, supervisor_cb_f cb)
 {
+	guint count;
+	struct bufferevent *bevent;
+
 	void group_filter(void *u1, struct child_info_s *ci) {
 		if (!gridinit_group_in_set((gchar*)u1, ci->group)) {
 			TRACE("start: Skipping [%s] with group [%s]", ci->key, ci->group);
 			return;
 		}
 		cb(udata, ci);
+		++ count;
 	}
 
-	struct bufferevent *bevent;
+	bevent = udata;
 
 	if (!nb_groups || !groupv)
 		supervisor_run_services(NULL, cb);
@@ -220,13 +224,17 @@ service_run_groupv(int nb_groups, char **groupv, void *udata, supervisor_cb_f cb
 		int i;
 		char *what;
 		struct child_info_s ci;
-		bevent = udata;
 
 		for (i=0; i<nb_groups ;i++) {
 			what = groupv[i];
 			if (*what == '@') {
 				TRACE("Callback on group [%s]", what);
+				count = 0;
 				supervisor_run_services(what+1, group_filter);
+				if (!count && bevent) {
+					/* notifies the client the group has not been found */
+					evbuffer_add_printf(bufferevent_get_output(bevent), "%d %s\n", ENOENT, what);
+				}
 			}
 			else {
 				bzero(&ci, sizeof(ci));
