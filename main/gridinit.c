@@ -201,17 +201,11 @@ alert_proc_started(void *udata, struct child_info_s *ci)
 
 /* COMMANDS management ----------------------------------------------------- */
 
-static gboolean
-service_matches_group(const gchar *group, struct child_info_s *ci)
-{
-	return 0 == g_ascii_strcasecmp(ci->group, group);
-}
-
 static void
 service_run_groupv(int nb_groups, char **groupv, void *udata, supervisor_cb_f cb)
 {
 	void group_filter(void *u1, struct child_info_s *ci) {
-		if (!service_matches_group((gchar*)u1, ci)) {
+		if (!gridinit_group_in_set((gchar*)u1, ci->group)) {
 			TRACE("start: Skipping [%s] with group [%s]", ci->key, ci->group);
 			return;
 		}
@@ -331,8 +325,11 @@ command_show(struct bufferevent *bevent, int argc, char **argv)
 			ci->uid, ci->gid,
 			ci->key, ci->group, ci->cmd);
 	}
+	
+	(void) argc;
+	(void) argv;
 
-	service_run_groupv(argc, argv, NULL, print_process);
+	service_run_groupv(0, NULL, NULL, print_process);
 	bufferevent_enable(bevent, EV_WRITE);
 	bufferevent_flush(bevent, EV_WRITE, BEV_FINISHED);
 	return 0;

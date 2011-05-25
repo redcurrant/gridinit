@@ -36,6 +36,7 @@ struct dump_status_arg_s {
 	int argc;
 	char **args;
 	guint count_faulty;
+	guint count_all;
 };
 
 struct dump_as_is_arg_s {
@@ -276,7 +277,7 @@ dump_status(FILE *in_stream, void *udata)
 		if (!*args)
 			return TRUE;
 		for (i=0; i<argc && (s=args[i]) ;i++) {
-			if (s[0]=='@' && !g_ascii_strcasecmp(ci->group, s+1))
+			if (s[0]=='@' && gridinit_group_in_set(s+1, ci->group))
 				return TRUE;
 			if (s[0]!='@' && !g_ascii_strcasecmp(ci->key, s))
 				return TRUE;
@@ -327,41 +328,46 @@ dump_status(FILE *in_stream, void *udata)
 	/* Dump the list */
 	for (l=all_jobs; l ;l=l->next) {
 		char str_time[20] = "---------- --------";
-		struct child_info_s *ci;
+		const char * str_status = "-";
+		struct child_info_s *ci = NULL;
 		gboolean faulty = FALSE;
 		
 		ci = l->data;
-
 		if (status_args->argc && status_args->args) {
 			if (!matches(ci, status_args->argc, status_args->args))
 				continue;
 		}
 
+		/* Prepare some fields */
 		if (ci->pid >= 0)
 			strftime(str_time, sizeof(str_time), "%Y-%m-%d %H:%M:%S",
 				gmtime(&(ci->last_start_attempt)));
+		str_status = get_child_status(ci, &faulty);
+		
+		/* Manage counters */
+		status_args->count_all ++;
+		if (faulty)
+			status_args->count_faulty ++;
 
+		/* Print now! */
 		switch (status_args->how) {
 		case MINI:
-			fprintf(stdout, fmt_line, ci->key, get_child_status(ci, &faulty), ci->pid, ci->group);
+			fprintf(stdout, fmt_line, ci->key, str_status, ci->pid, ci->group);
 			break;
 		case MEDIUM:
 			fprintf(stdout, fmt_line,
-				ci->key, get_child_status(ci, &faulty), ci->pid,
+				ci->key, str_status, ci->pid,
 				ci->counter_started, ci->counter_died,
 				str_time, ci->group, ci->cmd);
 			break;
 		default:
 			fprintf(stdout, fmt_line,
-				ci->key, get_child_status(ci, &faulty), ci->pid,
+				ci->key, str_status, ci->pid,
 				ci->counter_started, ci->counter_died,
 				ci->rlimits.core_size, ci->rlimits.stack_size, ci->rlimits.nb_files,
 				str_time, ci->group, ci->cmd);
 			break;
 		}
-		
-		if (faulty)
-			status_args->count_faulty ++;
 	}
 	fflush(stdout);
 
@@ -398,7 +404,7 @@ open_cnx(void)
 	return req_stream;
 }
 
-static void
+static int
 send_commandf(void (*dumper)(FILE *, void *), void *udata, const char *fmt, ...)
 {
 	va_list va;
@@ -413,10 +419,13 @@ send_commandf(void (*dumper)(FILE *, void *), void *udata, const char *fmt, ...)
 		fflush(req_stream);
 		dumper(req_stream, udata);
 		fclose(req_stream);
+		return 1;
 	}
+
+	return 0;
 }
 
-static void
+static int
 send_commandv(void (*dumper)(FILE *, void*), void *udata, int argc, char **args)
 {
 	int i;
@@ -432,12 +441,16 @@ send_commandv(void (*dumper)(FILE *, void*), void *udata, int argc, char **args)
 		fflush(req_stream);
 		dumper(req_stream, udata);
 		fclose(req_stream);
+		return 1;
 	}
+
+	return 0;
 }
 
 static int
 command_status(int lvl, int argc, char **args)
 {
+	int rc;
 	struct dump_status_arg_s status_args;
 	gchar *real_args[] = {"status",NULL};
 
@@ -450,8 +463,10 @@ command_status(int lvl, int argc, char **args)
 	status_args.argc = argc-1;
 	status_args.args = args+1;
 
-	send_commandv(dump_status, &status_args, 1, real_args);
-	return status_args.count_faulty != 0;
+	rc = send_commandv(dump_status, &status_args, 1, real_args);
+	return !rc
+		|| status_args.count_faulty != 0
+		|| (status_args.argc > 0 && status_args.count_all == 0);
 }
 
 static int
@@ -475,43 +490,55 @@ command_status2(int argc, char **args)
 static int
 command_start(int argc, char **args)
 {
+	int rc;
 	struct dump_as_is_arg_s dump_args;
 
 	bzero(&dump_args, sizeof(dump_args));
-	send_commandv(dump_as_is, &dump_args, argc, args);
-	return dump_args.count_errors != 0;
+	rc = send_commandv(dump_as_is, &dump_args, argc, args);
+	return !rc
+		|| dump_args.count_errors != 0
+		|| dump_args.count_success == 0;
 }
 
 static int
 command_stop(int argc, char **args)
 {
+	int rc;
 	struct dump_as_is_arg_s dump_args;
 
 	bzero(&dump_args, sizeof(dump_args));
-	send_commandv(dump_as_is, &dump_args, argc, args);
-	return dump_args.count_errors != 0;
+	rc = send_commandv(dump_as_is, &dump_args, argc, args);
+	return !rc
+		|| dump_args.count_errors != 0
+		|| dump_args.count_success == 0;
 }
 
 static int
 command_repair(int argc, char **args)
 {
+	int rc;
 	struct dump_as_is_arg_s dump_args;
 
 	bzero(&dump_args, sizeof(dump_args));
-	send_commandv(dump_as_is, &dump_args, argc, args);
-	return dump_args.count_errors != 0;
+	rc = send_commandv(dump_as_is, &dump_args, argc, args);
+	return !rc
+		|| dump_args.count_errors != 0
+		|| dump_args.count_success == 0;
 }
 
 static int
 command_reload(int argc, char **args)
 {
+	int rc;
 	struct dump_as_is_arg_s dump_args;
 
 	(void) argc;
 	(void) args;
 	bzero(&dump_args, sizeof(dump_args));
-	send_commandf(dump_as_is, &dump_args, "reload\n");
-	return dump_args.count_errors != 0;
+	rc = send_commandf(dump_as_is, &dump_args, "reload\n");
+	return !rc
+		|| dump_args.count_errors != 0
+		|| dump_args.count_success == 0;
 }
 
 

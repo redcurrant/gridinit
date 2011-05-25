@@ -24,11 +24,11 @@ CFLAGS+= -I../lib
 
 #LDFLAGS = -L@LIBEVENT_LIBDIR@
 
-gridinit_SOURCES = gridinit.c cnx.c alerting.c gridinit_alerts.h gridinit_internals.h
+gridinit_SOURCES = gridinit.c utils.c cnx.c alerting.c gridinit_alerts.h gridinit_internals.h
 gridinit_LDADD = -llog4c $(GLIB_LIBS) @LIBEVENT_LIBS@ ../lib/libgridinit-utils.la
 gridinit_CFLAGS = @LIBEVENT_CFLAGS@
 
-gridinit_cmd_SOURCES = gridinit_cmd.c cnx.c gridinit_internals.h
+gridinit_cmd_SOURCES = gridinit_cmd.c utils.c cnx.c gridinit_internals.h
 gridinit_cmd_LDADD = -llog4c $(GLIB_LIBS)
 
 gridinit_testcmd_SOURCES = test_cmd.c

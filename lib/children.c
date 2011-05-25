@@ -79,7 +79,7 @@ struct child_s {
 	GSList *env;
 
 	gchar key[SUPERVISOR_LIMIT_CHILDKEYSIZE];
-	gchar group[SUPERVISOR_LIMIT_GROUPSIZE];
+	gchar group[2048];
 
 	/* Useful stats */
 	guint counter_started;

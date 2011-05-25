@@ -67,4 +67,8 @@ void gridinit_alerting_send(int event, const char *msg);
 
 void gridinit_alerting_close(void);
 
+/* Groups matching */
+
+gboolean gridinit_group_in_set(const gchar *group, const gchar *set);
+
 #endif
