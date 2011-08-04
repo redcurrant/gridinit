@@ -435,15 +435,8 @@ _child_start(struct child_s *sd, void *udata, supervisor_cb_f cb)
 static void
 _child_stop(struct child_s *sd)
 {
-	time_t now;
-	register int allow_sigkill;
-
-	now = time(0);
-	allow_sigkill = FALSE;
-	if (sd->last_kill_attempt)
-		allow_sigkill = (now - sd->last_kill_attempt) > SUPERVISOR_DEFAULT_TIMEOUT_KILL;
-	kill(sd->pid, (allow_sigkill ? SIGKILL : SIGTERM));
-	sd->last_kill_attempt = now;
+	kill(sd->pid, SIGTERM);
+	sd->last_kill_attempt = time(0);
 }
 
 static void
@@ -691,13 +684,11 @@ supervisor_children_stopall(guint max_retries)
 		FLAG_DEL(sd, MASK_STARTED);
 	}
 
-	for (retries=0; retries<max_retries ;retries++) {
+	for (retries=0; max_retries<=0 || retries<max_retries ;retries++) {
 		if (!supervisor_children_killall(SIGTERM))
 			return;
 		sleep(1);
 	}
-
-	supervisor_children_killall(SIGKILL);
 }
 
 guint
