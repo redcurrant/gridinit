@@ -99,7 +99,7 @@ struct child_s {
 };
 
 static struct child_s SRV_BEACON = {
-	NULL, NULL, -1, 0, 0,
+	NULL, NULL, 0, 0, 0,
 	NULL, 0, 0, NULL,
 	"", "",     /* keys */
 	0, 0, 0, 0, /* birth/death stats */
@@ -235,14 +235,13 @@ _wait_for_dead_child(pid_t *ptr_pid)
 {
 	register pid_t pid, pid_exited;
 
-	pid = *ptr_pid;
-	if (pid < 0)
+	if ((pid = *ptr_pid) <= 0)
 		return 0;
 
 	errno = 0;
 	pid_exited = waitpid(pid, NULL, WNOHANG);
 	if (pid_exited>0 || errno==ECHILD) {
-		*ptr_pid = -1;
+		*ptr_pid = 0;
 		return 1;
 	}
 
@@ -435,8 +434,10 @@ _child_start(struct child_s *sd, void *udata, supervisor_cb_f cb)
 static void
 _child_stop(struct child_s *sd)
 {
-	kill(sd->pid, SIGTERM);
-	sd->last_kill_attempt = time(0);
+	if (sd->pid > 0) {
+		kill(sd->pid, SIGTERM);
+		sd->last_kill_attempt = time(0);
+	}
 }
 
 static void
@@ -760,7 +761,7 @@ supervisor_children_register(const gchar *key, const gchar *cmd, GError **error)
 	sd->flags = MASK_STARTED|MASK_RESPAWN|MASK_DELAYED;
 	sd->working_directory = g_get_current_dir();
 	sd->command = g_strdup(cmd);
-	sd->pid = -1;
+	sd->pid = 0;
 	sd->uid = getuid();
 	sd->gid = getgid();
 

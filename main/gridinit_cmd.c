@@ -357,7 +357,7 @@ dump_status(FILE *in_stream, void *udata)
 		}
 
 		/* Prepare some fields */
-		if (ci->pid >= 0)
+		if (ci->pid > 0)
 			strftime(str_time, sizeof(str_time), "%Y-%m-%d %H:%M:%S",
 				gmtime(&(ci->last_start_attempt)));
 		str_status = get_child_status(ci, &faulty);

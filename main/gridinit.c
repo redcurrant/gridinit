@@ -199,6 +199,27 @@ alert_proc_started(void *udata, struct child_info_s *ci)
 	gridinit_alerting_send(GRIDINIT_EVENT_STARTED, buff);
 }
 
+static void
+thread_ignore_signals(void)
+{
+        sigset_t new_set, old_set;
+
+        sigemptyset(&new_set);
+        sigemptyset(&old_set);
+        sigaddset(&new_set, SIGQUIT);
+        sigaddset(&new_set, SIGINT);
+        sigaddset(&new_set, SIGALRM);
+        sigaddset(&new_set, SIGHUP);
+        sigaddset(&new_set, SIGCONT);
+        sigaddset(&new_set, SIGUSR1);
+        sigaddset(&new_set, SIGUSR2);
+        sigaddset(&new_set, SIGTERM);
+        sigaddset(&new_set, SIGPIPE);
+        sigaddset(&new_set, SIGCHLD);
+        if (0 > sigprocmask(SIG_BLOCK, &new_set, &old_set))
+                ALERT("Some signals could not be blocked : %s", strerror(errno));
+}
+
 /* COMMANDS management ----------------------------------------------------- */
 
 static void
@@ -212,6 +233,7 @@ service_run_groupv(int nb_groups, char **groupv, void *udata, supervisor_cb_f cb
 			TRACE("start: Skipping [%s] with group [%s]", ci->key, ci->group);
 			return;
 		}
+		TRACE("Calback on service [%s]", ci->key);
 		cb(udata, ci);
 		++ count;
 	}
@@ -443,7 +465,6 @@ supervisor_signal_handler(int s, short flags, void *udata)
 		flag_running = 0;
 		return;
 	case SIGCHLD:
-		(void) supervisor_children_catharsis(NULL, alert_proc_died);
 		return;
 	case SIGALRM:
 		return;
@@ -1641,6 +1662,7 @@ is_gridinit_running(const gchar *path)
 int
 main(int argc, char ** args)
 {
+	guint proc_count;
 	int rc = 1;
 	struct event_base *libevents_handle = NULL;
 	
@@ -1662,7 +1684,7 @@ main(int argc, char ** args)
 	supervisor_children_init();
 	__parse_options(argc, args);
 
-	close(0);/* We will never read the standard input */
+	freopen( "/dev/null", "r", stdin);
 
 	if (is_gridinit_running(sock_path)) {
 		FATAL("A gridinit is probably already running,"
@@ -1677,8 +1699,8 @@ main(int argc, char ** args)
 			FATAL("Failed to daemonize : %s", strerror(errno));
 			goto label_exit;
 		}
-		close(1);
-		close(2);
+		freopen( "/dev/null", "w", stdout);
+		freopen( "/dev/null", "w", stderr);
 		write_pid_file();
 	}
 	
@@ -1700,6 +1722,7 @@ main(int argc, char ** args)
 	signals_manage(SIGALRM);
 	signals_manage(SIGQUIT);
 	signals_manage(SIGUSR1);
+	signals_manage(SIGPIPE);
 	signals_manage(SIGUSR2);
 	signals_manage(SIGCHLD);
 	if (!servers_monitor_all()) {
@@ -1710,60 +1733,63 @@ main(int argc, char ** args)
 	timer_event_arm(TRUE);
 	
 	DEBUG("Starting the event loop!");
-	do { /* main loop */
-		guint proc_count;
 
-		/* start all the enabled processes */
+	/* start all the enabled processes */
+	proc_count = supervisor_children_start_enabled(NULL, alert_proc_started);
+	DEBUG("First started %u processes", proc_count);
+
+	while (flag_running) {
+
+		proc_count = supervisor_children_catharsis(NULL, alert_proc_died);
+		if (proc_count > 0)
+			INFO("%u services died", proc_count);
+
+		/* alert for the services that died */
+		supervisor_run_services(NULL, alert_send_deferred);
+
+		proc_count = supervisor_children_kill_disabled();
+		if (proc_count)
+			INFO("Killed %u disabled/stopped services", proc_count);
+
 		proc_count = supervisor_children_start_enabled(NULL, alert_proc_started);
-		DEBUG("First started %u processes", proc_count);
+		if (proc_count)
+			INFO("Started %u enabled services", proc_count);
 
-		while (flag_running) {
-			
-			/* alert for the services that died */
-			supervisor_run_services(NULL, alert_send_deferred);
-			if (!flag_running)
-				break;
+		if (!flag_running)
+			break;
+		if (flag_check_socket)
+			servers_ensure();
 
-			/* some status changed */
-			proc_count = supervisor_children_kill_disabled();
-			if (proc_count)
-				INFO("Killed %u disabled/stopped services", proc_count);
-			if (!flag_running)
-				break;
+		/* Be sure to wake */
+		alarm(1);
 
-			proc_count = supervisor_children_start_enabled(NULL, alert_proc_started);
-			if (proc_count)
-				INFO("Started %u enabled services", proc_count);
-			if (!flag_running)
-				break;
-			if (flag_check_socket)
-				servers_ensure();
-			
-			/* Be sure to wake */
-			alarm(1);
-
-			/* Manages the connections pool */
-			if (0 > event_loop(EVLOOP_ONCE)) {
-				ERROR("event_loop() error : %s", strerror(errno));
-				break;
-			}
+		/* Manages the connections pool */
+		if (0 > event_loop(EVLOOP_ONCE)) {
+			ERROR("event_loop() error : %s", strerror(errno));
+			break;
 		}
-	} while (0);
+	}
 
 	rc = 0;
 
 label_exit:
 	/* stop all the processes */
 	DEBUG("Stopping all the children");
-	(void) supervisor_children_stopall(4);
+	(void) supervisor_children_stopall(1);
+
+	thread_ignore_signals();
+	DEBUG("Waiting for them to die");
+	(void) supervisor_children_catharsis(NULL, alert_proc_died);
 
 	/* clean the working structures */
+	thread_ignore_signals();
+
 	DEBUG("Cleaning the working structures");
 	if (libevents_handle)
 		event_base_free(libevents_handle);
 
-	(void) supervisor_children_catharsis(NULL, alert_proc_died);
 	supervisor_children_cleanall();
+	supervisor_children_fini();
 	servers_clean();
 	signals_clean();
 	g_free(config_path);
