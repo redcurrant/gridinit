@@ -380,6 +380,7 @@ _child_start(struct child_s *sd, void *udata, supervisor_cb_f cb)
 		return -1;
 
 	case 0: /*child*/
+		setsid();
 		if (supervisor_cb_postfork != NULL)
 			supervisor_cb_postfork(supervisor_cb_postfork_udata);
 		reset_sighandler();
