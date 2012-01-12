@@ -9,6 +9,7 @@
 #include <unistd.h>
 
 #include <glib.h>
+#include <log4c.h>
 
 #include "../main/gridinit_alerts.h"
 
