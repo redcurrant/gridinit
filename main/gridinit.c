@@ -76,6 +76,7 @@ static char *config_subdir = NULL;
 static char **groups_only_cli = NULL;
 static char **groups_only_cfg = NULL;
 
+static volatile int flag_help = 0;
 static volatile int flag_quiet = 0;
 static volatile int flag_daemon = 0;
 static volatile int flag_running = ~0;
@@ -900,6 +901,7 @@ main_usage(void)
 	g_printerr("\n"
 		"Usage: %s [OPTIONS] ... CONFIG_PATH [LOG4C_PATH]\n"
 		" with OPTIONS:\n"
+		"    -d       : Detaches then daemonizes the gridinit\n"
 		"    -h       : displays this help section\n"
 		"    -g GROUP : limits the services loading to those belonging to\n"
 		"               the specified group. This option can be repeated.\n"
@@ -1554,10 +1556,13 @@ __parse_options(int argc, char ** args)
 	int c;
 	GError *error_local = NULL;
 
-	while (-1 != (c = getopt(argc, args, "qdg:"))) {
+	while (-1 != (c = getopt(argc, args, "qhdg:"))) {
 		switch (c) {
 			case 'd':
 				flag_daemon = ~0;
+				break;
+			case 'h':
+				flag_help = ~0;
 				break;
 			case 'g':
 				if (!optarg) {
@@ -1577,10 +1582,17 @@ __parse_options(int argc, char ** args)
 		}
 	}
 	
+	if (flag_help) {
+		main_usage();
+		exit(0);
+		return;
+	}
+
 	/* check for additionnal arguments */
 	if (optind >= argc) {
 		main_usage();
 		exit(1);
+		return;
 	}
 	
 	/* Loads the log4c configuration */
@@ -1681,6 +1693,7 @@ main(int argc, char ** args)
 	g_strlcpy(sock_path, GRIDINIT_SOCK_PATH, sizeof(sock_path)-1);
 
 	log4c_init();
+	g_set_prgname(args[0]);
 	supervisor_children_init();
 	__parse_options(argc, args);
 
