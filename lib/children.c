@@ -350,7 +350,6 @@ _child_start(struct child_s *sd, void *udata, supervisor_cb_f cb)
 	typeof(errno) errsav;
 	gint argc;
 	gchar **args;
-	pid_t pid_father;
 	struct my_rlimits_s saved_limits;
 	
 	if (!sd || !sd->command) {
@@ -365,7 +364,6 @@ _child_start(struct child_s *sd, void *udata, supervisor_cb_f cb)
 	
 	bzero(&saved_limits, sizeof(saved_limits));
 
-	pid_father = getpid();
 	sd->last_start_attempt = time(0);
 
 	_child_set_rlimits(&(sd->rlimits), &saved_limits);
@@ -632,10 +630,8 @@ guint
 supervisor_children_kill_obsolete(void)
 {
 	guint count;
-	time_t now;
 	struct child_s *sd;
 
-	now = time(0);
 	count = 0U;
 
 	FOREACH_CHILD(sd) {
@@ -806,10 +802,8 @@ guint
 supervisor_children_kill_disabled(void)
 {
 	guint count;
-	time_t now;
 	struct child_s *sd;
 
-	now = time(0);
 	count = 0U;
 
 	FOREACH_CHILD(sd) {
