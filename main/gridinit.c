@@ -85,6 +85,8 @@ static volatile int flag_check_socket = 0;
 static volatile gint32 default_uid = -1;
 static volatile gint32 default_gid = -1;
 
+static GHashTable *default_env = NULL;
+
 static gboolean _cfg_reload(gboolean services_only, GError **err);
 
 static void servers_ensure(void);
@@ -515,14 +517,13 @@ __event_command_in(struct bufferevent *bevent, void *udata)
 	}
 	else {
 		cmd_f callback;
-		int rc = -1;
 
 		if (!g_shell_parse_argv(cmd, &argc, &argv, NULL))
 			TRACE("Invalid request from fd=%d", bufferevent_getfd(bevent));
 		else {
 			TRACE("Executing request [%s] from fd=%d", argv[0], bufferevent_getfd(bevent));
 			if (NULL != (callback = __resolve_command(argv[0])))
-				rc = (callback)(bevent, argc-1, argv+1);
+				(callback)(bevent, argc-1, argv+1);
 			g_strfreev(argv);
 		}
 		free(cmd);
@@ -1029,8 +1030,13 @@ _cfg_service_load_env(GKeyFile *kf, const gchar *section, const gchar *str_key, 
 	gpointer k, v;
 	
 	ht_env = _cfg_extract_parameters(kf, section, "env.", err);
-	if (!ht_env)
-		return FALSE;	
+	if (ht_env && g_hash_table_size(ht_env) == 0) {
+		g_hash_table_destroy(ht_env);
+		ht_env = default_env;
+	}
+
+	if (!ht_env || g_hash_table_size(ht_env) == 0)
+		return FALSE;
 
 	g_hash_table_iter_init(&iter_env, ht_env);
 	while (g_hash_table_iter_next(&iter_env, &k, &v)) {
@@ -1045,8 +1051,10 @@ _cfg_service_load_env(GKeyFile *kf, const gchar *section, const gchar *str_key, 
 
 	DEBUG("[%s] environment saved", str_key);
 	rc = TRUE;
+
 exit:
-	g_hash_table_destroy(ht_env);
+	if (ht_env && ht_env != default_env)
+		g_hash_table_destroy(ht_env);
 	return rc;
 }
 
@@ -1375,6 +1383,9 @@ _cfg_section_default(GKeyFile *kf, const gchar *section, GError **err)
 		g_free(str);
 	}
 	g_strfreev(keys);
+
+	/* Extract the default environment */
+	default_env = _cfg_extract_parameters(kf, section, "env.", NULL);
 
 	/* Set the defautl limits for the services (apply them directly to the gridinit itself) */
 	int rc0 = supervisor_limit_set(SUPERV_LIMIT_CORE_SIZE, limit_core_size);
