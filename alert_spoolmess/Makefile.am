@@ -18,7 +18,7 @@ plugindir=$(libdir)/gridinit
 
 plugin_LTLIBRARIES = gridinit_alert_spoolmess.la
 
-gridinit_alert_spoolmess_la_CFLAGS = $(CFLAGS) -I@METAUTILS_DIR@/include
+gridinit_alert_spoolmess_la_CFLAGS = $(CFLAGS)
 
 gridinit_alert_spoolmess_la_LDFLAGS = -module -avoid-version $(GLIB_LDFLAGS) -L/usr/local/@LD_LIBDIR@
 
