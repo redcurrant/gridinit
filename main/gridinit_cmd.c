@@ -14,6 +14,7 @@
 #include <errno.h>
 #include <unistd.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 
 #include <glib.h>
 
@@ -595,7 +596,20 @@ main_options(int argc, char **args)
 
 	/* set pretty defaults */
 	bzero(sock_path, sizeof(sock_path));
-	g_strlcpy(sock_path, GRIDINIT_SOCK_PATH, sizeof(sock_path)-1);
+	
+	/* try to find sock_path */
+	/* look in /GRID/hostname/run/ and /GRID/common/run */
+	do{
+		char hostname[256];
+		struct stat stat_sock;
+		bzero(hostname, sizeof(hostname));
+		gethostname(hostname, sizeof(hostname));	
+		g_snprintf(sock_path, sizeof(sock_path), "/GRID/%s/run/gridinit.sock", hostname);
+		if(0 != stat(sock_path, &stat_sock)) {
+			bzero(sock_path, sizeof(sock_path));
+			g_strlcpy(sock_path, GRIDINIT_SOCK_PATH, sizeof(sock_path)-1);
+		}
+	} while(0);
 
 	/*  */
 	while ((opt = getopt(argc, args, "chS:")) != -1) {
