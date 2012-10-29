@@ -28,5 +28,5 @@ libgridinit_utils_la_SOURCES = \
 	gridinit-internals.h
 
 libgridinit_utils_la_LDFLAGS = $(GLIB_LDFLAGS)
-libgridinit_utils_la_LIBADD = -lglib-2.0 
+libgridinit_utils_la_LIBADD = -llog4c -lglib-2.0 
 
