@@ -191,6 +191,7 @@ alert_send_deferred(void *udata, struct child_info_s *ci)
 	}
 }
 
+#if 0
 static void
 alert_proc_started(void *udata, struct child_info_s *ci)
 {
@@ -201,6 +202,7 @@ alert_proc_started(void *udata, struct child_info_s *ci)
 		ci->pid, ci->key, ci->cmd);
 	gridinit_alerting_send(GRIDINIT_EVENT_STARTED, buff);
 }
+#endif
 
 static void
 thread_ignore_signals(void)
@@ -1759,7 +1761,7 @@ main(int argc, char ** args)
 	DEBUG("Starting the event loop!");
 
 	/* start all the enabled processes */
-	proc_count = supervisor_children_start_enabled(NULL, alert_proc_started);
+	proc_count = supervisor_children_start_enabled(NULL, NULL);
 	DEBUG("First started %u processes", proc_count);
 
 	while (flag_running) {
@@ -1775,7 +1777,7 @@ main(int argc, char ** args)
 		if (proc_count)
 			INFO("Killed %u disabled/stopped services", proc_count);
 
-		proc_count = supervisor_children_start_enabled(NULL, alert_proc_started);
+		proc_count = supervisor_children_start_enabled(NULL, NULL);
 		if (proc_count)
 			INFO("Started %u enabled services", proc_count);
 
