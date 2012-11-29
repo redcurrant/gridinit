@@ -2,7 +2,7 @@
 # define __GRIDINIT_ALERTS_H__
 # include <glib.h>
 # define GRIDINIT_EVENT_STARTED   1
-# define GRIDINIT_EVENT_DIED      2
+# define GRIDINIT_EVENT_RESTARTED 2
 # define GRIDINIT_EVENT_BROKEN    3
 
 /**

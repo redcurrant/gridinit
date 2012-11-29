@@ -8,7 +8,7 @@
 #  define SUPERVISOR_LIMIT_GROUPSIZE 256
 # endif
 # ifndef  SUPERVISOR_DEFAULT_TIMEOUT_KILL
-#  define SUPERVISOR_DEFAULT_TIMEOUT_KILL 5
+#  define SUPERVISOR_DEFAULT_TIMEOUT_KILL 60
 # endif
 # include <sys/types.h>
 # include <unistd.h>
@@ -44,6 +44,7 @@ struct child_info_s {
 	gboolean breakable;
 	guint32 user_flags;
 	const char *group;
+	gboolean started;
 };
 
 typedef void (supervisor_postfork_f) (void *udata);
@@ -137,6 +138,11 @@ int supervisor_children_set_delay(const char *key, gboolean enabled);
 int supervisor_children_repair_all(void);
 
 /**
+ * Restart a service
+ */
+int supervisor_children_restart(const char *key);
+
+/**
  *
  */
 int supervisor_children_set_limit(const gchar *key,
@@ -180,6 +186,13 @@ int supervisor_children_clearenv(const gchar *key);
  * @return
  */
 int supervisor_children_set_user_flags(const gchar *key, guint32 flags);
+
+/**
+ * @param key
+ * @param flags
+ * @return
+ */
+int supervisor_children_del_user_flags(const gchar *key, guint32 flags);
 
 /**
  * @param key

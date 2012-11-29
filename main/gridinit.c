@@ -36,7 +36,8 @@
 #include "../lib/gridinit-internals.h"
 
 #define USERFLAG_ONDIE_EXIT                                          0x00000001
-#define USERFLAG_ALERT_PENDING                                       0x00000002
+#define USERFLAG_PROCESS_DIED                                        0x00000002
+#define USERFLAG_PROCESS_RESTARTED				     0x00000004
 
 #ifdef HAVE_EXTRA_DEBUG
 # define XDEBUG DEBUG
@@ -167,42 +168,42 @@ alert_proc_died(void *udata, struct child_info_s *ci)
 		flag_running = FALSE;
 	}
 
-	supervisor_children_set_user_flags(ci->key, ci->user_flags|USERFLAG_ALERT_PENDING);
+	if (ci->started)
+		supervisor_children_set_user_flags(ci->key, USERFLAG_PROCESS_DIED);
 }
 
 static void
 alert_send_deferred(void *udata, struct child_info_s *ci)
 {
+	(void) udata;
 	gchar buff[1024];
 
-	(void) udata;
-
-	if (!(ci->user_flags & USERFLAG_ALERT_PENDING))
-		return;
-
-	supervisor_children_set_user_flags(ci->key, ci->user_flags & (~USERFLAG_ALERT_PENDING));
-	if (ci->broken) {
+	/* Handle the alerting of broken services */
+	if ((ci->user_flags & USERFLAG_PROCESS_DIED) && ci->broken) {
+		supervisor_children_del_user_flags(ci->key, USERFLAG_PROCESS_DIED);
 		g_snprintf(buff, sizeof(buff), "Process broken [%s] %s", ci->key, ci->cmd);
 		gridinit_alerting_send(GRIDINIT_EVENT_BROKEN, buff);
 	}
-	else {
-		g_snprintf(buff, sizeof(buff), "Process died [%s] %s", ci->key, ci->cmd);
-		gridinit_alerting_send(GRIDINIT_EVENT_DIED, buff);
+
+	/* Handle the alerting of successfully restarted services */
+	if (!(ci->user_flags & USERFLAG_PROCESS_DIED) && (ci->user_flags & USERFLAG_PROCESS_RESTARTED)) {
+		supervisor_children_del_user_flags(ci->key, USERFLAG_PROCESS_RESTARTED);
+		g_snprintf(buff, sizeof(buff), "Process restarted [%s] %s", ci->key, ci->cmd);
+		gridinit_alerting_send(GRIDINIT_EVENT_RESTARTED, buff);
 	}
 }
 
-#if 0
 static void
 alert_proc_started(void *udata, struct child_info_s *ci)
 {
-	gchar buff[1024];
-
 	(void) udata;
-	g_snprintf(buff, sizeof(buff), "Process started pid=%d [%s] %s",
-		ci->pid, ci->key, ci->cmd);
-	gridinit_alerting_send(GRIDINIT_EVENT_STARTED, buff);
+
+	/* Note service has restarted */
+	if (ci->user_flags & USERFLAG_PROCESS_DIED) {
+		supervisor_children_del_user_flags(ci->key, USERFLAG_PROCESS_DIED);
+		supervisor_children_set_user_flags(ci->key, USERFLAG_PROCESS_RESTARTED);
+	}
 }
-#endif
 
 static void
 thread_ignore_signals(void)
@@ -292,15 +293,15 @@ command_start(struct bufferevent *bevent, int argc, char **argv)
 		
 		switch (supervisor_children_status(ci->key, TRUE)) {
 		case 0:
-			NOTICE("Already started [%s]", ci->key);
+			INFO("Already started [%s]", ci->key);
 			evbuffer_add_printf(bufferevent_get_output(bevent), "%d %s\n", EALREADY, ci->key);
 			return;
 		case 1:
-			NOTICE("Started [%s]", ci->key);
+			INFO("Started [%s]", ci->key);
 			evbuffer_add_printf(bufferevent_get_output(bevent), "%d %s\n", 0, ci->key);
 			return;
 		default:
-			NOTICE("Cannot start [%s] : %s", ci->key, strerror(errno));
+			WARN("Cannot start [%s] : %s", ci->key, strerror(errno));
 			evbuffer_add_printf(bufferevent_get_output(bevent), "%d %s\n", errno, ci->key);
 			return;
 		}
@@ -319,15 +320,15 @@ command_stop(struct bufferevent *bevent, int argc, char **argv)
 		(void) udata;
 		switch (supervisor_children_status(ci->key, FALSE)) {
 		case 0:
-			NOTICE("Already stopped [%s]", ci->key);
+			INFO("Already stopped [%s]", ci->key);
 			evbuffer_add_printf(bufferevent_get_output(bevent), "%d %s\n", EALREADY, ci->key);
 			return;
 		case 1:
-			NOTICE("Stopped [%s]", ci->key);
+			INFO("Stopped [%s]", ci->key);
 			evbuffer_add_printf(bufferevent_get_output(bevent), "%d %s\n", 0, ci->key);
 			return;
 		default:
-			NOTICE("Cannot stop [%s] : %s", ci->key, strerror(errno));
+			WARN("Cannot stop [%s] : %s", ci->key, strerror(errno));
 			evbuffer_add_printf(bufferevent_get_output(bevent), "%d %s\n", errno, ci->key);
 			return;
 		}
@@ -338,6 +339,34 @@ command_stop(struct bufferevent *bevent, int argc, char **argv)
 	bufferevent_flush(bevent, EV_WRITE, BEV_FINISHED);
 	return 0;
 }
+
+static int
+command_restart(struct bufferevent *bevent, int argc, char **argv)
+{
+	void restart_process(void *udata, struct child_info_s *ci) {
+		(void) udata;
+		switch (supervisor_children_restart(ci->key)) {
+		case 0:
+			INFO("Already restarted [%s]", ci->key);
+			evbuffer_add_printf(bufferevent_get_output(bevent), "%d %s\n", EALREADY, ci->key);
+			return;
+		case 1:
+			INFO("Restart [%s]", ci->key);
+			evbuffer_add_printf(bufferevent_get_output(bevent), "%d %s\n", 0, ci->key);
+			return;
+		default:
+			WARN("Cannot restart [%s] : %s", ci->key, strerror(errno));
+			evbuffer_add_printf(bufferevent_get_output(bevent), "%d %s\n", errno, ci->key);
+			return;
+		}
+	}
+
+	service_run_groupv(argc, argv, bevent, restart_process);
+	bufferevent_enable(bevent, EV_WRITE);
+	bufferevent_flush(bevent, EV_WRITE, BEV_FINISHED);
+	return 0;
+}
+
 
 static int
 command_show(struct bufferevent *bevent, int argc, char **argv)
@@ -429,6 +458,7 @@ static struct cmd_mapping_s COMMANDS [] = {
 	{"repair",  command_repair },
 	{"start",   command_start },
 	{"stop",    command_stop },
+	{"restart", command_restart },
 	{"reload",  command_reload },
 	{NULL,      NULL}
 };
@@ -1395,7 +1425,7 @@ _cfg_section_default(GKeyFile *kf, const gchar *section, GError **err)
 	int rc0 = supervisor_limit_set(SUPERV_LIMIT_CORE_SIZE, limit_core_size);
 	int rc1 = supervisor_limit_set(SUPERV_LIMIT_MAX_FILES, limit_nb_files);
 	int rc2 = supervisor_limit_set(SUPERV_LIMIT_THREAD_STACK, limit_thread_stack);
-	INFO("Set gridinit limits to [%"G_GINT64_FORMAT", %"G_GINT64_FORMAT", %"G_GINT64_FORMAT"] (%d,%d,%d)",
+	DEBUG("Set gridinit limits to [%"G_GINT64_FORMAT", %"G_GINT64_FORMAT", %"G_GINT64_FORMAT"] (%d,%d,%d)",
 			limit_core_size, limit_nb_files, limit_thread_stack, rc0, rc1, rc2);
 
 	/* Loads the default UID/GID for the services*/
@@ -1648,7 +1678,7 @@ write_pid_file(void)
 
 	fprintf(stream_pidfile, "%d", getpid());
 	fclose(stream_pidfile);
-	INFO("Wrote PID in [%s]", pidfile_path);
+	NOTICE("Wrote PID in [%s]", pidfile_path);
 }
 
 static gboolean
@@ -1676,11 +1706,14 @@ is_gridinit_running(const gchar *path)
 		return TRUE;
 	}
 
-	rc = unlink(path);
-	g_printerr("Removing stalled socket : unlink(%s) = %d : errno = %d (%s)\n",
-			path, rc, errno, strerror(errno));
-	NOTICE("Removing stalled socket : unlink(%s) = %d : errno = %d (%s)",
-			path, rc, errno, strerror(errno));
+	if (unlink(path) == 0) {
+		NOTICE("Removing stalled socket [%s]", path);
+	}
+	else if (errno != ENOENT) {
+		g_printerr("Failed to remove stalled socket [%s] : %s", path, strerror(errno));
+		WARN("Failed to remove stalled socket [%s] : %s", path, strerror(errno));
+	}
+
 	return FALSE;
 }
 
@@ -1768,18 +1801,18 @@ main(int argc, char ** args)
 
 		proc_count = supervisor_children_catharsis(NULL, alert_proc_died);
 		if (proc_count > 0)
-			INFO("%u services died", proc_count);
+			DEBUG("%u services died", proc_count);
 
 		/* alert for the services that died */
 		supervisor_run_services(NULL, alert_send_deferred);
 
 		proc_count = supervisor_children_kill_disabled();
 		if (proc_count)
-			INFO("Killed %u disabled/stopped services", proc_count);
+			DEBUG("Killed %u disabled/stopped services", proc_count);
 
-		proc_count = supervisor_children_start_enabled(NULL, NULL);
+		proc_count = supervisor_children_start_enabled(NULL, alert_proc_started);
 		if (proc_count)
-			INFO("Started %u enabled services", proc_count);
+			DEBUG("Started %u enabled services", proc_count);
 
 		if (!flag_running)
 			break;
@@ -1805,7 +1838,8 @@ label_exit:
 
 	thread_ignore_signals();
 	DEBUG("Waiting for them to die");
-	(void) supervisor_children_catharsis(NULL, alert_proc_died);
+	while (supervisor_children_kill_disabled() > 0)
+		sleep(1);
 
 	/* clean the working structures */
 	thread_ignore_signals();

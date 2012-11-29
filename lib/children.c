@@ -55,6 +55,11 @@
  */
 #define MASK_DELAYED      0x40
 
+/**
+ * Tells if the child should restart after explicitely being stopped
+ */
+#define MASK_RESTART	  0x80
+
 #define FLAG_SET(sd,M) do { sd->flags |= (M); } while (0)
 #define FLAG_DEL(sd,M) do { sd->flags &= ~(M); } while (0)
 #define FLAG_HAS(sd,M) (sd->flags & (M))
@@ -85,6 +90,7 @@ struct child_s {
 	guint counter_started;
 	guint counter_died;
 	time_t last_start_attempt;
+	time_t first_kill_attempt;
 	time_t last_kill_attempt;
 	struct {
 		time_t t0;
@@ -102,7 +108,7 @@ static struct child_s SRV_BEACON = {
 	NULL, NULL, 0, 0, 0,
 	NULL, 0, 0, NULL,
 	"", "",     /* keys */
-	0, 0, 0, 0, /* birth/death stats */
+	0, 0, 0, 0, 0, /* birth/death stats */
 	{0,0,0,0,0} /* deaths */,
 	{0,0,0}     /* limits */
 };
@@ -147,6 +153,13 @@ _child_set_flag(struct child_s *sd, guint32 mask, gboolean enabled)
 			return 0;
 		FLAG_SET(sd,mask);
 		return 1;
+	}
+	else {
+		if (mask & MASK_STARTED) {
+			sd->first_kill_attempt = 0;
+			sd->last_kill_attempt = 0;
+			_child_reset_deaths(sd);
+		}
 	}
 
 	if (!FLAG_HAS(sd,mask))
@@ -193,6 +206,7 @@ _child_get_info(struct child_s *c, struct child_info_s *ci)
 	ci->key = c->key;
 	ci->cmd = c->command;
 	ci->enabled = !FLAG_HAS(c,MASK_DISABLED);
+	ci->started = FLAG_HAS(c,MASK_STARTED);
 	ci->respawn = FLAG_HAS(c,MASK_RESPAWN);
 	ci->broken = FLAG_HAS(c,MASK_BROKEN);
 	ci->breakable = !FLAG_HAS(c,MASK_NEVER_BROKEN);
@@ -379,16 +393,12 @@ _child_start(struct child_s *sd, void *udata, supervisor_cb_f cb)
 
 	case 0: /*child*/
 		setsid();
+		sd->pid = getpid();
 		if (supervisor_cb_postfork != NULL)
 			supervisor_cb_postfork(supervisor_cb_postfork_udata);
 		reset_sighandler();
 		
-		if (cb) {
-			struct child_info_s ci;
-			sd->pid = getpid();
-			_child_get_info(sd, &ci);
-			cb(udata, &ci);
-		}
+		INFO("Starting service [%s] with pid %i", sd->key, sd->pid);
 
 		/* change the rights before changing the working directory */
 		if (getuid() == 0) {
@@ -414,9 +424,15 @@ _child_start(struct child_s *sd, void *udata, supervisor_cb_f cb)
 		return 0;/*makes everybody happy*/
 
 	default: /*father*/
+		if (cb) {
+			struct child_info_s ci;
+			_child_get_info(sd, &ci);
+			cb(udata, &ci);
+		}
+
 		_child_restore_rlimits(&saved_limits);
 
-		INFO("set limits (%"G_GINT64_FORMAT",%"G_GINT64_FORMAT",%"G_GINT64_FORMAT")"
+		DEBUG("set limits (%"G_GINT64_FORMAT",%"G_GINT64_FORMAT",%"G_GINT64_FORMAT")"
 			" then restored (%"G_GINT64_FORMAT",%"G_GINT64_FORMAT",%"G_GINT64_FORMAT") (stack,file,core)"
 			, sd->rlimits.stack_size, sd->rlimits.nb_files, sd->rlimits.core_size
 			, saved_limits.stack_size, saved_limits.nb_files, saved_limits.core_size);
@@ -434,8 +450,18 @@ static void
 _child_stop(struct child_s *sd)
 {
 	if (sd->pid > 0) {
-		kill(sd->pid, SIGTERM);
-		sd->last_kill_attempt = time(0);
+		time_t now = time(0);
+		if (sd->first_kill_attempt == 0)
+			sd->first_kill_attempt = now;
+		if (sd->first_kill_attempt > 0 && (now - sd->first_kill_attempt > SUPERVISOR_DEFAULT_TIMEOUT_KILL)) {
+			DEBUG("Service [%s] did not exit after 60s, sending SIGKILL", sd->key);
+			kill(sd->pid, SIGKILL);
+		}
+		else {
+			DEBUG("Sending SIGTERM to service [%s] pid %i", sd->key, sd->pid);
+			kill(sd->pid, SIGTERM);
+		}
+		sd->last_kill_attempt = now;
 	}
 }
 
@@ -655,7 +681,7 @@ supervisor_children_catharsis(void *udata, supervisor_cb_f cb)
 	struct child_info_s ci;
 	
 	count = 0;
-	while ((pid_dead = waitpid(0, NULL, WNOHANG)) > 0) {
+	while ((pid_dead = waitpid(-1, NULL, WNOHANG)) > 0) {
 		FOREACH_CHILD(sd) {
 			if (sd->pid == pid_dead) {
 				count++;
@@ -665,6 +691,11 @@ supervisor_children_catharsis(void *udata, supervisor_cb_f cb)
 					cb(udata, &ci);
 				}
 				sd->pid = -1;
+				/* put started flag back if restart was asked */
+				if (FLAG_HAS(sd, MASK_RESTART)) {
+					FLAG_DEL(sd, MASK_RESTART);
+					FLAG_SET(sd, MASK_STARTED);
+				}
 				break;
 			}
 		}
@@ -810,6 +841,7 @@ supervisor_children_kill_disabled(void)
 		if (!_child_should_be_up(sd)) {
 			if (sd->pid > 0) {
 				_child_stop(sd);
+				_wait_for_dead_child(&(sd->pid));
 				count ++;
 			}
 		}
@@ -874,6 +906,12 @@ int
 supervisor_children_status(const char *key, gboolean to_be_started)
 {
 	return supervisor_children_set_flag(key, MASK_STARTED, to_be_started);
+}
+
+int
+supervisor_children_restart(const char *key)
+{
+	return supervisor_children_set_flag(key, MASK_STARTED, FALSE) && supervisor_children_set_flag(key, MASK_RESTART, TRUE);
 }
 
 int
@@ -1015,7 +1053,26 @@ supervisor_children_set_user_flags(const gchar *key, guint32 flags)
 		return -1;
 	}
 
-	sd->user_flags = flags;
+	sd->user_flags |= flags;
+	errno = 0;
+	return 0;
+}
+
+int
+supervisor_children_del_user_flags(const gchar *key, guint32 flags)
+{
+	struct child_s *sd;
+
+	if (!key) {
+		errno = EINVAL;
+		return -1;
+	}
+	if (!(sd = supervisor_get_child(key))) {
+		errno = ENOENT;
+		return -1;
+	}
+
+	sd->user_flags &= ~(flags);
 	errno = 0;
 	return 0;
 }

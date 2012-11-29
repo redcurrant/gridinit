@@ -548,6 +548,19 @@ command_stop(int argc, char **args)
 }
 
 static int
+command_restart(int argc, char **args)
+{
+	int rc;
+	struct dump_as_is_arg_s dump_args;
+
+	bzero(&dump_args, sizeof(dump_args));
+	rc = send_commandv(dump_as_is, &dump_args, argc, args);
+	return !rc
+		|| dump_args.count_errors != 0
+		|| dump_args.count_success == 0;
+}
+
+static int
 command_repair(int argc, char **args)
 {
 	int rc;
@@ -582,8 +595,9 @@ static struct command_s COMMANDS[] = {
 	{ "status",   command_status0 },
 	{ "status2",  command_status1 },
 	{ "status3",  command_status2 },
-	{ "start",   command_start  },
-	{ "stop",    command_stop   },
+	{ "start",    command_start  },
+	{ "stop",     command_stop   },
+	{ "restart",  command_restart },
 	{ "reload",  command_reload },
 	{ "repair",  command_repair },
 	{ NULL, NULL }
@@ -645,6 +659,7 @@ help(char **args)
 	g_print("  start   : Starts the given processes or groups, even if broken\n");
 	g_print("  stop    : Stops the given processes or groups, they won't be automatically\n");
 	g_print("            restarted even after a configuration reload\n");
+	g_print("  restart : Restart the given processes or groups\n");
 	g_print("  reload  : reloads the configuration, stopping obsolete processes, starting\n");
 	g_print("            the newly discovered. Broken or stopped processes are not restarted\n");
 	g_print("  repair  : removes the broken flag set on a process. Start must be called to\n");

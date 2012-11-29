@@ -54,9 +54,9 @@ gridinit_spoolmess_handle(void *udata, int event, const char *msg)
 		criticity = "WARNING";
 		default_msg = "a process has been started";
 		break;
-	case GRIDINIT_EVENT_DIED:
+	case GRIDINIT_EVENT_RESTARTED:
 		criticity = "MINOR";
-		default_msg = "a process died";
+		default_msg = "a process has been restarted";
 		break;
 	case GRIDINIT_EVENT_BROKEN:
 		criticity = "CRITIC";
