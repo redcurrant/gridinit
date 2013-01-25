@@ -120,14 +120,19 @@ get_child_status(struct child_info_s *ci, gboolean *faulty)
 	struct keyword_set_s *kw;
 
 	kw = flag_color ? &KEYWORDS_COLOR : &KEYWORDS_NORMAL;
-	*faulty = TRUE;
 
-	if (ci->broken)
+	if (ci->broken) {
+		*faulty = TRUE;
 		return kw->broken;
-	if (!ci->enabled)
+	}
+	if (!ci->enabled) {
+		*faulty = FALSE;
 		return kw->disabled;
-	if (ci->pid <= 0)
+	}
+	if (ci->pid <= 0) {
+		*faulty = TRUE;
 		return kw->down;
+	}
 
 	*faulty = FALSE;
 	return kw->up;
