@@ -115,7 +115,7 @@ __open_unix_server(const char *path)
 	}
 
 	/* Create ressources to monitor */
-	sock = socket(PF_UNIX, SOCK_STREAM, 0);
+	sock = socket(PF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
 	if (sock < 0)
 		return -1;
 
