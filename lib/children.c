@@ -468,6 +468,9 @@ _child_stop(struct child_s *sd)
 static void
 _child_notify_death(struct child_s *sd)
 {
+	if (FLAG_HAS(sd, MASK_RESTART))
+		return;
+
 	sd->counter_died ++;
 	sd->deaths.t4 = sd->deaths.t3;
 	sd->deaths.t3 = sd->deaths.t2;
