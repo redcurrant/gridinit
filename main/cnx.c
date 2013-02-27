@@ -7,9 +7,9 @@
 
 #include <stdlib.h>
 #include <stdio.h>
-#include <fcntl.h>
 #include <errno.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <string.h>
 #include <strings.h>
 #include <arpa/inet.h>
@@ -115,9 +115,21 @@ __open_unix_server(const char *path)
 	}
 
 	/* Create ressources to monitor */
-	sock = socket(PF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+#ifdef SOCK_CLOEXEC
+# define SOCK_FLAGS SOCK_CLOEXEC
+#else
+# define SOCK_FLAGS 0
+#endif
+
+	sock = socket(PF_UNIX, SOCK_STREAM | SOCK_FLAGS, 0);
 	if (sock < 0)
 		return -1;
+
+#ifndef SOCK_CLOEXEC
+# ifdef FD_CLOEXEC
+	(void) fcntl(sock, F_SETFD, fcntl(sock, F_GETFD)|FD_CLOEXEC);
+# endif
+#endif
 
 	/* Bind to file */
 	local.sun_family = AF_UNIX;
