@@ -914,7 +914,9 @@ supervisor_children_status(const char *key, gboolean to_be_started)
 int
 supervisor_children_restart(const char *key)
 {
-	return supervisor_children_set_flag(key, MASK_STARTED, FALSE) && supervisor_children_set_flag(key, MASK_RESTART, TRUE);
+	return supervisor_children_set_flag(key, MASK_BROKEN, FALSE) &&
+		supervisor_children_set_flag(key, MASK_STARTED, FALSE) &&
+		supervisor_children_set_flag(key, MASK_RESTART, TRUE);
 }
 
 int
