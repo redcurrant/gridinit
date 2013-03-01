@@ -607,9 +607,13 @@ supervisor_children_start_enabled(void *udata, supervisor_cb_f cb)
 		}
 
 		if (sd->pid <= 0) {
+			if (FLAG_HAS(sd, MASK_RESTART))
+				_child_set_flag(sd, MASK_STARTED, TRUE);
+
 			if (_child_can_be_restarted(sd)) {
 				if (0 == _child_start(sd, udata, cb))
 					count ++;
+				FLAG_DEL(sd, MASK_RESTART);
 			}
 		}
 	}
@@ -694,11 +698,6 @@ supervisor_children_catharsis(void *udata, supervisor_cb_f cb)
 					cb(udata, &ci);
 				}
 				sd->pid = -1;
-				/* put started flag back if restart was asked */
-				if (FLAG_HAS(sd, MASK_RESTART)) {
-					FLAG_DEL(sd, MASK_RESTART);
-					FLAG_SET(sd, MASK_STARTED);
-				}
 				break;
 			}
 		}
@@ -841,6 +840,10 @@ supervisor_children_kill_disabled(void)
 	count = 0U;
 
 	FOREACH_CHILD(sd) {
+		/* Stop child that needs to be restarted */
+		if (FLAG_HAS(sd,MASK_RESTART))
+			_child_set_flag(sd, MASK_STARTED, FALSE);	
+
 		if (!_child_should_be_up(sd)) {
 			if (sd->pid > 0) {
 				_child_stop(sd);
@@ -914,9 +917,10 @@ supervisor_children_status(const char *key, gboolean to_be_started)
 int
 supervisor_children_restart(const char *key)
 {
-	return supervisor_children_set_flag(key, MASK_BROKEN, FALSE) &&
-		supervisor_children_set_flag(key, MASK_STARTED, FALSE) &&
-		supervisor_children_set_flag(key, MASK_RESTART, TRUE);
+	/* Remove flag to allow restart if child was broken */
+	supervisor_children_set_flag(key, MASK_BROKEN, FALSE);
+
+	return supervisor_children_set_flag(key, MASK_RESTART, TRUE);
 }
 
 int
