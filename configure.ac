@@ -65,7 +65,7 @@ AC_ARG_WITH([libevent-lib],
   [LIBEVENT_LIBDIR=$withval],
   [LIBEVENT_LIBDIR=/$LIBEVENT_DIR/$LD_LIBDIR]
 )
-AC_CHECK_FILE([$LIBEVENT_DIR/include/event.h],,[AC_MSG_ERROR([not found])])
+AC_CHECK_HEADER([event.h],,[AC_MSG_ERROR([not found])])
 AC_SUBST(LIBEVENT_DIR)
 AC_SUBST(LIBEVENT_LIBDIR)
 
