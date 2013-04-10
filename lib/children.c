@@ -348,7 +348,6 @@ _child_exec(struct child_s *sd, int argc, char ** args)
 	if (NULL == (real_cmd = g_find_program_in_path(cmd)))
 		FATAL("'%s' not found in PATH:%s", cmd, g_getenv("PATH"));
 	else {
-		DEBUG("execve(%s) ... bye!", real_cmd);
 		execve(real_cmd, args, env);
 		FATAL("exec failed : errno=%d %s", errno, strerror(errno));
 	}
@@ -398,32 +397,22 @@ _child_start(struct child_s *sd, void *udata, supervisor_cb_f cb)
 			supervisor_cb_postfork(supervisor_cb_postfork_udata);
 		reset_sighandler();
 		
-		INFO("Starting service [%s] with pid %i", sd->key, sd->pid);
-
 		/* change the rights before changing the working directory */
 		if (getuid() == 0) {
-			if (-1 == setgid(sd->gid))
-				WARN("setgid(%d) failed (errno=%d %s), currently with gid [%d]",
-					sd->gid, errno, strerror(errno), getgid());
-			if (-1 == setuid(sd->uid))
-				WARN("setuid(%d) failed (errno=%d %s), currently with uid [%d]",
-					sd->uid, errno, strerror(errno), getuid());
+			setgid(sd->gid);
+			setuid(sd->uid);
 		}
-
-		if (sd->working_directory) {
-			if (-1 == chdir(sd->working_directory)) {
-				gchar *str_cwd = g_get_current_dir();
-				WARN("chdir(%s) failed (%s), currently in [%s]",
-					sd->working_directory, strerror(errno), str_cwd);
-				g_free(str_cwd);
-			}
-		}
+		if (sd->working_directory)
+			chdir(sd->working_directory);
 
 		_child_exec(sd, argc, args);
 		exit(-1);
 		return 0;/*makes everybody happy*/
 
 	default: /*father*/
+
+		INFO("Starting service [%s] with pid %i", sd->key, sd->pid);
+
 		if (cb) {
 			struct child_info_s ci;
 			_child_get_info(sd, &ci);
