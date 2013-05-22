@@ -32,18 +32,11 @@ esac
 case "$build" in
 x86_64*)
   LD_LIBDIR=lib64
-  #AC_CHECK_LIB([sysmm64], [spoolmess], [LSYSMM=-lsysmm64])
-  LSYSMM=-lsysmm64
   ;;
 *)
   LD_LIBDIR=lib
-  AC_CHECK_LIB([sysmm], [spoolmess], [LSYSMM=-lsysmm])
-  LSYSMM=-lsysmm
   ;;
 esac
-
-AM_CONDITIONAL([COND_SYSMM], [test -n "$LSYSMM"])
-AC_SUBST(LSYSMM)
 
 AC_ARG_WITH([ld-libdir],
   AS_HELP_STRING([--with-ld-libdir=DIR],
@@ -74,25 +67,6 @@ AC_SUBST(LIBEVENT_LIBS)
 LIBEVENT_CFLAGS=`pkg-config --cflags libevent`
 AC_SUBST(LIBEVENT_CFLAGS)
 
-# Toggle specific modules
-AC_ARG_ENABLE([spoolmess],
-  AS_HELP_STRING([--enable-spoolmess=DIR],
-    [Builds the alert_module based on spoolmess]),
-  [
-	SYSMM_DEFINE=[-DSPOOLMESS=1]
-	AC_SUBST(SYSMM_DEFINE)
-
-	AC_DEFINE([HAVE_SYSMM], 1, [NetApp support has been trigerred])
-	AC_SUBST(SYSMM_DEFINE)
-
-	SYSMM_LIBS="$LSYSMM"
-	AC_SUBST(SYSMM_LIBS)
-
-	sysmm_enabled=true
-  ]
-)
-AM_CONDITIONAL([SYSMM_ENABLED], [test x$sysmm_enabled = xtrue])
-
 # Checks for libraries.
 AM_PATH_LOG4C
 AM_PATH_GLIB_2_0(2.18.0,,AC_MSG_ERROR(glib version >= 2.18 required),[gmodule gthread])
@@ -117,7 +91,6 @@ AC_CHECK_FUNCS([memset mkdir regcomp strchr strdup strerror])
 
 AC_CONFIG_FILES([Makefile
 		 lib/Makefile
-		 alert_spoolmess/Makefile
 		 main/Makefile])
 AC_OUTPUT
 
