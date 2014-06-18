@@ -268,6 +268,7 @@ dump_as_is(FILE *in_stream, void *udata)
 					start, strerror(code));
 		}
 	}
+	fflush(stdout);
 }
 
 static void

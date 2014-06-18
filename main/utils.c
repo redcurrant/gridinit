@@ -25,7 +25,7 @@ gridinit_group_in_set(const gchar *group, const gchar *set)
 {
 	gchar **tokens, **token, *g;
 
-	tokens = g_strsplit_set(set, ",:", -1);
+	tokens = g_strsplit_set(set, ",", -1);
 	if (!tokens)
 		return 0;
 	for (token=tokens; (g = *token) ;token++) {
