@@ -14,10 +14,3 @@ limit.stack_size=1024
 #include=/etc/gridinit.conf.d/*
 include=/GRID/*/conf/gridinit.conf.d/*
 
-[Alerts]
-plugin=/usr/local/lib64/gridinit/gridinit_alert_spoolmess.so
-symbol=MODULE_EXPORT
-config.sopcode=MUT-GRD-7000
-config.code_client=GRID
-config.code_projet=HoneyComb
-
