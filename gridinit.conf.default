@@ -11,6 +11,5 @@ limit.core_size=-1
 limit.max_files=8192
 limit.stack_size=1024
 
-#include=/etc/gridinit.conf.d/*
+include=/etc/gridinit.conf.d/*
 include=/GRID/*/conf/gridinit.conf.d/*
-

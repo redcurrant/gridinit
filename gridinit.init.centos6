@@ -1,0 +1,161 @@
+#!/bin/bash
+#
+# gridinit	This shell script takes care of starting and stopping
+#		gridinit daemon.
+#
+# chkconfig: 345 85 15
+# description: gridinit is GridStorage process management daemon.
+
+# Source function library.
+. /etc/init.d/functions
+
+gridinit=/usr/local/bin/gridinit
+gridinitcmd=/usr/local/bin/gridinit_cmd
+if [ -f "/GRID/${HOSTNAME}/conf/gridinit.conf" ]; then
+	gridinitconf=/GRID/${HOSTNAME}/conf/gridinit.conf
+	gridinitlog4crc=/GRID/${HOSTNAME}/conf/gridinit.log4crc
+else
+	if [ -f "/GRID/common/conf/gridinit.conf" ]; then
+		gridinitconf=/GRID/common/conf/gridinit.conf
+		gridinitlog4crc=/GRID/common/conf/gridinit.log4crc
+	else
+		gridinitconf=/etc/gridinit.conf
+	        gridinitlog4crc=/etc/gridinit.log4crc
+	fi
+fi
+
+prog="gridinit"
+
+if [ -f /etc/sysconfig/gridinit ];then
+        . /etc/sysconfig/gridinit
+fi
+
+
+pidfile=$(grep pidfile $gridinitconf | grep -v "^\s*#" | awk -F= '{print $2}')
+RETVAL=0
+
+# A function to stop a program (from functions but modified for gridinit specific needs)
+localkillproc() {
+        local RC base pid pid_file= delay
+
+        RC=0; delay=3
+        # Test syntax.
+        if [ "$#" -eq 0 ]; then
+                echo $"Usage: killproc [-p pidfile] [ -d delay] {program}"
+                return 1
+        fi
+        if [ "$1" = "-p" ]; then
+                pid_file=$2
+                shift 2
+        fi
+        if [ "$1" = "-d" ]; then
+                delay=$2
+                shift 2
+        fi
+        
+        # Save basename.
+        base=${1##*/}
+
+        # Find pid.
+        __pids_var_run "$1" "$pid_file"
+        if [ -z "$pid_file" -a -z "$pid" ]; then
+                pid="$(__pids_pidof "$1")"
+        fi
+
+        # Kill it.
+        if [ -n "$pid" ] ; then
+               [ "$BOOTUP" = "verbose" -a -z "${LSB:-}" ] && echo -n "$base "
+               if checkpid $pid 2>&1; then
+                   # TERM first, then KILL if not dead
+                   kill -TERM $pid >/dev/null 2>&1
+                   usleep 100000
+                   wait=0
+                   while checkpid $pid && [ $wait -lt $delay ]
+                   do
+                        sleep $((wait+=3))
+                   done
+                   if checkpid $pid ; then
+                        kill -KILL $pid >/dev/null 2>&1
+                        usleep 100000
+                   fi
+                fi
+                checkpid $pid
+                RC=$?
+                [ "$RC" -eq 0 ] && failure $"$base shutdown" || success $"$base shutdown"
+                RC=$((! $RC))
+        else
+                if [ -n "${LSB:-}" -a -n "$killlevel" ]; then
+                        RC=7 # Program is not running
+                else
+                        failure $"$base shutdown"
+                        RC=0
+                fi
+        fi
+
+        # Remove pid file if any.
+        if [ -z "$killlevel" ]; then
+            rm -f "${pid_file:-/var/run/$base.pid}"
+        fi
+        return $RC
+}
+
+start() {
+        # Start daemons.
+        echo -n $"Starting $prog: "
+        daemon $gridinit -d $OPTIONS $gridinitconf $gridinitlog4crc 2> /dev/null
+	RETVAL=$?
+        echo
+        [ $RETVAL -eq 0 ] && touch /var/lock/subsys/$prog
+	return $RETVAL
+}
+
+stop() {
+        echo -n $"Shutting down $prog: "
+	localkillproc -p $pidfile -d 70 $gridinit
+	RETVAL=$?
+        echo
+        [ $RETVAL -eq 0 ] && rm -f /var/lock/subsys/$prog
+	return $RETVAL
+}
+
+reload() {
+	echo -n $"Reloading configuration $prog: "
+	$gridinitcmd reload
+	RETVAL=$?
+	return $RETVAL
+}
+
+# See how we were called.
+case "$1" in
+  start)
+	start
+        ;;
+  stop)
+	stop
+        ;;
+  status)
+	status $gridinit
+	RETVAL=$?
+	;;
+  restart)
+	stop
+	start
+	RETVAL=$?
+	;;
+  reload)
+	reload
+	RETVAL=$?
+	;;
+  condrestart)
+	if [ -f /var/lock/subsys/$prog ]; then
+	    stop
+	    start
+	    RETVAL=$?
+	fi
+	;;
+  *)
+        echo $"Usage: $0 {start|stop|restart|condrestart|status}"
+        exit 1
+esac
+
+exit $RETVAL

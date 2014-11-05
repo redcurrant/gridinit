@@ -134,7 +134,8 @@ include_directories(AFTER
 add_subdirectory(./lib)
 add_subdirectory(./main)
 
-if (SYSMM_FOUND)
-	add_subdirectory(./alert_spoolmess)
-endif()
+# FPE 20141105
+#if (SYSMM_FOUND)
+#	add_subdirectory(./alert_spoolmess)
+#endif()
 
