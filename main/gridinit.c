@@ -1247,7 +1247,7 @@ _cfg_section_service(GKeyFile *kf, const gchar *section, GError **err)
 	if (default_uid>0 && default_gid>0) {
 		if (0 > supervisor_children_set_ids(str_key, default_uid, default_gid))
 			WARN("Failed to set UID/GID to %d/%d for [%s] : %s",
-					str_key, default_uid, default_uid, strerror(errno));
+					default_uid, default_gid, str_key, strerror(errno));
 	}
 
 	/* explicit user/group pair */
