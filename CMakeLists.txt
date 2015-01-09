@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 2.6)
-project (GridInit)
+project (GridInit C)
 
 include(CheckIncludeFile)
 include(CheckLibraryExists)
@@ -67,11 +67,9 @@ add_definitions(-DG_ERRORCHECK_MUTEXES)
 add_definitions(-DG_DISABLE_DEPRECATED=1)
 add_definitions(-DHAVE_SOCKLEN_T)
 
-if (NOT GRIDINIT_SOCK_PATH)
-	set(GRIDINIT_SOCK_PATH "/GRID/common/run/gridinit.sock")
+if (DEFINED GRIDINIT_SOCK_PATH)
+	add_definitions(-DGRIDINIT_SOCK_PATH="${GRIDINIT_SOCK_PATH}")
 endif()
-
-add_definitions(-DGRIDINIT_SOCK_PATH="${GRIDINIT_SOCK_PATH}")
 
 if (LD_LIBDIR)
 	MESSAGE("LD_LIBDIR explicitely set to ${LD_LIBDIR}")
@@ -97,8 +95,6 @@ message(STATUS "Installation prefix : ${CMAKE_INSTALL_PREFIX}")
 find_package(PkgConfig)
 pkg_check_modules(GLIB2 REQUIRED glib-2.0 gthread-2.0 gmodule-2.0)
 pkg_check_modules(LIBEVENT REQUIRED libevent)
-
-set(LOG4C_LIBRARIES "-llog4c")
 
 ###--------------------###
 ### sysmm availability ###

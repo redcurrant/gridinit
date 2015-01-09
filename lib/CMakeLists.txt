@@ -11,7 +11,7 @@ add_library(gridinit-utils SHARED
 		gridinit-internals.h)
 
 target_link_libraries(gridinit-utils
-		${GLIB2_LIBRARIES} ${LOG4C_LIBRARIES})
+		${GLIB2_LIBRARIES})
 
 set_target_properties(gridinit-utils PROPERTIES
 		PUBLIC_HEADER "gridinit-utils.h"

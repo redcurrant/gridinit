@@ -1,19 +1,21 @@
 /*
- * Copyright (C) 2013 AtoS Worldline
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU Affero General Public License as
- * published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU Affero General Public License for more details.
- *
- * You should have received a copy of the GNU Affero General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
- */
+gridinit, a monitor for non-daemon processes.
+Copyright (C) 2013 AtoS Worldline, original work aside of Redcurrant
+Copyright (C) 2015 OpenIO, modified for OpenIO Software Defined Storage
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program.  If not, see <http://www.gnu.org/licenses/>.
+*/
 
 #ifdef HAVE_CONFIG_H
 # include "../config.h"
@@ -41,9 +43,9 @@
 #include <sys/stat.h>
 #include <sys/un.h>
 
+#include <syslog.h>
 #include <glob.h>
 
-#include <log4c.h>
 #include <event.h>
 #include <glib.h>
 
@@ -56,15 +58,7 @@
 #define USERFLAG_PROCESS_DIED                                        0x00000002
 #define USERFLAG_PROCESS_RESTARTED				     0x00000004
 
-#ifdef HAVE_EXTRA_DEBUG
-# define XDEBUG DEBUG
-# define XTRACE TRACE
-#else
-# define XDEBUG(FMT,...)
-# define XTRACE(FMT,...)
-#endif
-
-#define BOOL(i) (i?1:0)
+#define BOOL(i) ((i)!=0)
 
 typedef int (*cmd_f)(struct bufferevent *bevent, int argc, char **argv);
 
@@ -85,6 +79,7 @@ struct server_sock_s {
 static GList *list_of_servers = NULL;
 static GList *list_of_signals = NULL; /* list of libevent events */
 
+static char syslog_id[256] = "";
 static char sock_path[1024] = "";
 static char pidfile_path[1024] = "";
 static char default_working_directory[1024] = "";
@@ -451,8 +446,8 @@ command_reload(struct bufferevent *bevent, int argc, char **argv)
 	evbuffer_add_printf(bufferevent_get_output(bevent), "%d obsoleted %u processes\n", 0, count);
 
 	if (!_cfg_reload(TRUE, &error_local)) {
-		ERROR("error: Failed to reload the configuration from [%s]\n", config_path);
-		ERROR("cause: %s\n", error_local ? error_local->message : "NULL");
+		WARN("error: Failed to reload the configuration from [%s]\n", config_path);
+		WARN("cause: %s\n", error_local ? error_local->message : "NULL");
 		evbuffer_add_printf(bufferevent_get_output(bevent), "%d reload\n", error_local ? error_local->code : EINVAL);
 	}
 	else {
@@ -612,7 +607,7 @@ __event_accept(int fd, short flags, void *udata)
 	ss_len = sizeof(ss);
 	fd_client = accept(fd, (struct sockaddr*)&ss, &ss_len);
 	if (fd_client < 0) {
-		ERROR("accept error on fd=%d : %s", fd, strerror(errno));
+		WARN("accept error on fd=%d : %s", fd, strerror(errno));
 		return;
 	}
 
@@ -1323,13 +1318,13 @@ _cfg_section_alert(GKeyFile *kf, const gchar *section, GError **err)
 		
 		if (!g_ascii_strcasecmp(*p_key, "plugin")) {
 			if (*cfg_plugin)
-				ERROR("Alerting plugin already known : plugin=[%s]", cfg_plugin);
+				NOTICE("Alerting plugin already known : plugin=[%s]", cfg_plugin);
 			else
 				g_strlcpy(cfg_plugin, str, sizeof(cfg_plugin)-1);
 		}
 		else if (!g_ascii_strcasecmp(*p_key, "symbol")) {
 			if (*cfg_symbol)
-				ERROR("Alerting symbol already known : symbol=[%s]", cfg_symbol);
+				NOTICE("Alerting symbol already known : symbol=[%s]", cfg_symbol);
 			else
 				g_strlcpy(cfg_symbol, str, sizeof(cfg_symbol)-1);
 		}
@@ -1340,7 +1335,7 @@ _cfg_section_alert(GKeyFile *kf, const gchar *section, GError **err)
 	g_strfreev(keys);
 
 	if (!*cfg_symbol || !*cfg_plugin) {
-		ERROR("Missing configuration keys : both \"plugin\" and \"symbol\""
+		WARN("Missing configuration keys : both \"plugin\" and \"symbol\""
 			" must be present in section [%s]", section);
 		return FALSE;
 	}
@@ -1398,14 +1393,11 @@ _cfg_section_default(GKeyFile *kf, const gchar *section, GError **err)
 			g_strlcpy(pidfile_path, str, sizeof(pidfile_path)-1);
 		}
 		else if (!g_ascii_strcasecmp(*p_key, CFG_KEY_LISTEN)) {
-			if (str[0] == '/') {
-				bzero(sock_path, sizeof(sock_path));
-				g_strlcpy(sock_path, str, sizeof(sock_path)-1);
-			}
-			else {
+			if (str[0] == '/')
+				g_strlcpy(sock_path, str, sizeof(sock_path));
+			else
 				g_printerr("section=%s, key=listen : not a UNIX path, ignored! [%s]\n",
 					section, str);
-			}
 		}
 		else if (!g_ascii_strcasecmp(*p_key, CFG_KEY_USER)) {
 			bzero(buf_user, sizeof(buf_user));
@@ -1540,14 +1532,14 @@ _cfg_reload(gboolean services_only, GError **err)
 
 	if (!g_key_file_load_from_file(kf, config_path, 0, err)) {
 		SETERRNO(err);
-		ERROR("Conf not parseable from [%s]", config_path);
+		WARN("Conf not parseable from [%s]", config_path);
 		goto label_exit;
 	}
 
 	/* First load the main files */
 	if (!_cfg_reload_file(kf, services_only, err)) {
 		SETERRNO(err);
-		ERROR("Conf not loadable from [%s]", config_path);
+		WARN("Conf not loadable from [%s]", config_path);
 		goto label_exit;
 	}
 
@@ -1569,7 +1561,7 @@ _cfg_reload(gboolean services_only, GError **err)
 			if (glob_rc == GLOB_NOMATCH)
 				NOTICE("Service file pattern matched no file!");
 			else
-				ERROR("reconfigure : glob error : %s", strerror(errno));
+				WARN("reconfigure : glob error : %s", strerror(errno));
 		}
 		else {
 			char **p_str;
@@ -1583,10 +1575,10 @@ _cfg_reload(gboolean services_only, GError **err)
 
 				sub_kf = g_key_file_new();
 				if (!g_key_file_load_from_file(sub_kf, *p_str, 0, &gerr_local))
-					ERROR("Configuration file [%s] not parsed : %s", *p_str,
+					WARN("Configuration file [%s] not parsed : %s", *p_str,
 						gerr_local ? gerr_local->message : "");
 				else if (!_cfg_reload_file(sub_kf, TRUE, &gerr_local))
-					ERROR("Configuration file [%s] not loaded : %s", *p_str,
+					WARN("Configuration file [%s] not loaded : %s", *p_str,
 						gerr_local ? gerr_local->message : "");
 				else
 					INFO("Loaded service file [%s]", *p_str);
@@ -1610,13 +1602,143 @@ label_exit:
 
 /* ------------------------------------------------------------------------- */
 
+static guint16
+compute_thread_id(GThread *thread)
+{
+	union {
+		void *p;
+		guint16 u[4];
+	} bulk;
+	memset(&bulk, 0, sizeof(bulk));
+	bulk.p = thread;
+	return (bulk.u[0] ^ bulk.u[1]) ^ (bulk.u[2] ^ bulk.u[3]);
+}
+
+static guint16
+get_thread_id(void)
+{
+	return compute_thread_id(g_thread_self());
+}
+
+static int
+glvl_to_lvl(GLogLevelFlags lvl)
+{
+	switch (lvl & G_LOG_LEVEL_MASK) {
+		case G_LOG_LEVEL_ERROR:
+		case G_LOG_LEVEL_CRITICAL:
+		case G_LOG_LEVEL_WARNING:
+			return LOG_NOTICE;
+		case G_LOG_LEVEL_MESSAGE:
+		case G_LOG_LEVEL_INFO:
+		case G_LOG_LEVEL_DEBUG:
+		default:
+			return LOG_INFO;
+	}
+}
+
+static inline const gchar*
+glvl_to_str(GLogLevelFlags lvl)
+{
+	switch (lvl & G_LOG_LEVEL_MASK) {
+		case G_LOG_LEVEL_ERROR:
+			return "ERR";
+		case G_LOG_LEVEL_CRITICAL:
+			return "CRI";
+		case G_LOG_LEVEL_WARNING:
+			return "WRN";
+		case G_LOG_LEVEL_MESSAGE:
+			return "NOT";
+		case G_LOG_LEVEL_INFO:
+			return "INF";
+		case G_LOG_LEVEL_DEBUG:
+			return "DBG";
+	}
+
+	switch (lvl >> G_LOG_LEVEL_USER_SHIFT) {
+		case 0:
+		case 1:
+			return "ERR";
+		case 2:
+			return "WRN";
+		case 4:
+			return "NOT";
+		case 8:
+			return "INF";
+		case 16:
+			return "DBG";
+		case 32:
+			return "TR0";
+		default:
+			return "TR1";
+	}
+}
+
+static void
+_append_message(GString *gstr, const gchar *msg)
+{
+	if (!msg)
+		return;
+	// skip leading blanks
+	for (; *msg && g_ascii_isspace(*msg) ;msg++) {}
+	g_string_append(gstr, msg);
+}
+
+static void
+logger_syslog(const gchar *log_domain, GLogLevelFlags log_level,
+		const gchar *message, gpointer user_data)
+{
+	(void) user_data;
+
+	GString *gstr = g_string_new("");
+
+	g_string_append_printf(gstr, "%d %04X", getpid(), get_thread_id());
+
+	if (!log_domain || !*log_domain)
+		log_domain = "-";
+	g_string_append(gstr, " log ");
+	g_string_append(gstr, glvl_to_str(log_level));
+	g_string_append_c(gstr, ' ');
+	g_string_append(gstr, log_domain);
+
+	g_string_append_c(gstr, ' ');
+
+	_append_message(gstr, message);
+
+	syslog(glvl_to_lvl(log_level), gstr->str);
+	g_string_free(gstr, TRUE);
+}
+
+static void
+logger_stderr(const gchar *log_domain, GLogLevelFlags log_level,
+		const gchar *message, gpointer user_data)
+{
+	struct timeval tv;
+	GString *gstr;
+
+	(void) user_data;
+
+	gstr = g_string_sized_new(256);
+	gettimeofday(&tv, NULL);
+
+	g_string_append_printf(gstr, "%ld.%03ld %d %04X ",
+			tv.tv_sec, tv.tv_usec/1000,
+			getpid(), get_thread_id());
+
+	if (!log_domain || !*log_domain)
+		log_domain = "-";
+
+	g_string_append_printf(gstr, "log %s %s %s\n", glvl_to_str(log_level), log_domain, message);
+	fwrite(gstr->str, gstr->len, 1, stderr);
+	g_string_free(gstr, TRUE);
+}
+
 static void
 __parse_options(int argc, char ** args)
 {
 	int c;
 	GError *error_local = NULL;
 
-	while (-1 != (c = getopt(argc, args, "qhdg:"))) {
+	while (-1 != (c = getopt(argc, args, "qhdg:s:"))) {
 		switch (c) {
 			case 'd':
 				flag_daemon = ~0;
@@ -1626,11 +1748,17 @@ __parse_options(int argc, char ** args)
 				break;
 			case 'g':
 				if (!optarg) {
-					g_printerr("Expected argument to the '-g' option\n");
+					g_printerr("Expected argument to the '-%c' option\n", c);
 					exit(1);
 				}
-				else
-					_str_set_array(TRUE, &groups_only_cli, optarg);
+				_str_set_array(TRUE, &groups_only_cli, optarg);
+				break;
+			case 's':
+				if (!optarg) {
+					g_printerr("Expected argument to the '-%c' option\n", c);
+					exit(1);
+				}
+				g_strlcpy(syslog_id, optarg, sizeof(syslog_id));
 				break;
 			case 'q':
 				flag_quiet = ~0;
@@ -1655,26 +1783,18 @@ __parse_options(int argc, char ** args)
 		return;
 	}
 	
-	/* Loads the log4c configuration */
-	if (optind + 1 < argc) {
-		int rc;
-		typeof(errno) errsav;
-		const char *log4crc_path = args[optind+1];
-		
-		rc = log4c_load(log4crc_path);
-		errsav = errno;
-		if (!flag_quiet)
-			g_printerr("Loaded the log4c configuration from [%s] : rc=%d %s (%s)\n",
-				log4crc_path, rc, strerror(rc), strerror(errsav));
+	if (*syslog_id) {
+		openlog(g_get_prgname(), LOG_PID, LOG_LOCAL0);
+		g_log_set_default_handler(logger_syslog, NULL);
 	}
-	
+
 	/* configuration loading */
 	config_path = g_strdup(args[optind]);
 	if (!flag_quiet)
-		g_printerr("Reading the config from [%s]\n", config_path);
+		DEBUG("Reading the config from [%s]", config_path);
 	if (!_cfg_reload(FALSE, &error_local)) {
 		if (!flag_quiet)
-			g_printerr("Configuration loading error from [%s] : %s\n", config_path, error_local->message);
+			ERROR("Configuration loading error from [%s] : %s\n", config_path, error_local->message);
 		exit(1);	
 	}
 }
@@ -1749,18 +1869,16 @@ main(int argc, char ** args)
 
 	groups_only_cli = NULL;
 	groups_only_cfg = NULL;
-	bzero(sock_path, sizeof(sock_path));
 	bzero(pidfile_path, sizeof(pidfile_path));
 	bzero(default_working_directory, sizeof(default_working_directory));
 
-	g_strlcpy(sock_path, GRIDINIT_SOCK_PATH, sizeof(sock_path)-1);
+	g_strlcpy(sock_path, GRIDINIT_SOCK_PATH, sizeof(sock_path));
 
-	log4c_init();
+	g_log_set_default_handler(logger_stderr, NULL);
 	g_set_prgname(args[0]);
 	supervisor_children_init();
 	__parse_options(argc, args);
-
-	freopen( "/dev/null", "r", stdin);
+	freopen("/dev/null", "r", stdin);
 
 	if (is_gridinit_running(sock_path)) {
 		FATAL("A gridinit is probably already running,"
@@ -1872,7 +1990,7 @@ label_exit:
 	g_free(config_path);
 
 	gridinit_alerting_close();
-	log4c_fini();
+	closelog();
 	return rc;
 }
 

@@ -1,7 +1,18 @@
 # Gridinit
 
-Gridinit is a tool used to manage Redcurrant services on a node.
+Gridinit is a tool used to manage non-daemon processes.
 
-## Getting Started
+## Build
 
-Go to http://www.redcurrant.io for documentations about installation and configuration of Gridinit.
+### Dependencies
+
+* cmake, make, gcc
+* libevent, libevent-devel
+* glib, glib-devel
+
+### Compile-time configuration
+
+| Macro | Default | Description |
+| ----- | ------- | ----------- |
+| GRIDINIT_SOCK_PATH | /var/run/gridinit.sock | Path used for the socket on both server and client side, when no path is specified in the configuration. |
+

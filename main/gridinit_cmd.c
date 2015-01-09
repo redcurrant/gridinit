@@ -1,19 +1,21 @@
 /*
- * Copyright (C) 2013 AtoS Worldline
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU Affero General Public License as
- * published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU Affero General Public License for more details.
- *
- * You should have received a copy of the GNU Affero General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
- */
+gridinit, a monitor for non-daemon processes.
+Copyright (C) 2013 AtoS Worldline, original work aside of Redcurrant
+Copyright (C) 2015 OpenIO, modified for OpenIO Software Defined Storage
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program.  If not, see <http://www.gnu.org/licenses/>.
+*/
 
 #ifdef HAVE_CONFIG_H
 # include "../config.h"
@@ -631,33 +633,16 @@ main_options(int argc, char **args)
 {
 	int opt;
 
-	/* set pretty defaults */
-	bzero(sock_path, sizeof(sock_path));
+	g_strlcpy(sock_path, GRIDINIT_SOCK_PATH, sizeof(sock_path));
 	
-	/* try to find sock_path */
-	/* look in /GRID/hostname/run/ and /GRID/common/run */
-	do{
-		char hostname[256];
-		struct stat stat_sock;
-		bzero(hostname, sizeof(hostname));
-		gethostname(hostname, sizeof(hostname));	
-		g_snprintf(sock_path, sizeof(sock_path), "/GRID/%s/run/gridinit.sock", hostname);
-		if(0 != stat(sock_path, &stat_sock)) {
-			bzero(sock_path, sizeof(sock_path));
-			g_strlcpy(sock_path, GRIDINIT_SOCK_PATH, sizeof(sock_path)-1);
-		}
-	} while(0);
-
-	/*  */
 	while ((opt = getopt(argc, args, "chS:")) != -1) {
 		switch (opt) {
 			case 'c':
 				flag_color = TRUE;
 				break;
 			case 'S':
-				bzero(sock_path, sizeof(sock_path));
 				if (optarg)
-					g_strlcpy(sock_path, optarg, sizeof(sock_path)-1);
+					g_strlcpy(sock_path, optarg, sizeof(sock_path));
 				break;
 			case 'h':
 				flag_help = TRUE;

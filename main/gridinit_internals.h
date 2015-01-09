@@ -1,25 +1,27 @@
 /*
- * Copyright (C) 2013 AtoS Worldline
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU Affero General Public License as
- * published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU Affero General Public License for more details.
- *
- * You should have received a copy of the GNU Affero General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
- */
+gridinit, a monitor for non-daemon processes.
+Copyright (C) 2013 AtoS Worldline, original work aside of Redcurrant
+Copyright (C) 2015 OpenIO, modified for OpenIO Software Defined Storage
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program.  If not, see <http://www.gnu.org/licenses/>.
+*/
 
 #ifndef  __GRIDINIT_INTERNALS_H__
 # define __GRIDINIT_INTERNALS_H__ 1
 
 # ifndef  GRIDINIT_SOCK_PATH
-#  define GRIDINIT_SOCK_PATH "/GRID/common/run/gridinit.sock"
+#  define GRIDINIT_SOCK_PATH "/var/run/gridinit.sock"
 # endif
 
 #ifndef  CFG_KEY_LISTEN

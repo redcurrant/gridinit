@@ -1,25 +1,24 @@
 /*
- * Copyright (C) 2013 AtoS Worldline
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU Affero General Public License as
- * published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU Affero General Public License for more details.
- *
- * You should have received a copy of the GNU Affero General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
- */
+gridinit-utils, a helper library for gridinit.
+Copyright (C) 2013 AtoS Worldline, original work aside of Redcurrant
+Copyright (C) 2015 OpenIO, modified for OpenIO Software Defined Storage
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program.  If not, see <http://www.gnu.org/licenses/>.
+*/
 
 #ifdef HAVE_CONFIG_H
 # include "../config.h"
-#endif
-#ifndef LOG_DOMAIN
-# define LOG_DOMAIN "gridinit.children"
 #endif
 
 #include <stdlib.h>
@@ -357,12 +356,15 @@ _child_exec(struct child_s *sd, int argc, char ** args)
 	gchar *real_cmd;
 
 	(void) argc;
-	/* IF the target command is just a filename, then try to find
+	/* If the target command is just a filename, then try to find
 	 * it in the PATH that could have been set for this command */
 	env = _child_build_env(sd);
 	supervisor_children_cleanall();
 
-	if (NULL == (real_cmd = g_find_program_in_path(cmd)))
+	if (g_path_is_absolute(cmd))
+		real_cmd = g_strdup(cmd);
+
+	if (!real_cmd || NULL == (real_cmd = g_find_program_in_path(cmd)))
 		FATAL("'%s' not executable or not found in PATH:%s", cmd, g_getenv("PATH"));
 	else {
 		execve(real_cmd, args, env);
@@ -1028,6 +1030,17 @@ supervisor_children_setenv(const gchar *key, const gchar *envkey,
 	sd->env = g_slist_concat(sd->env, kv);
 	errno = 0;
 	return 0;
+}
+
+void
+supervisor_children_inherit_env(const gchar *key)
+{
+	gchar **keys = g_listenv();
+	if (keys) {
+		for (gchar **p = keys; *p ;++p)
+			(void) supervisor_children_setenv (key, *p, g_getenv(*p));
+		g_strfreev(keys);
+	}
 }
 
 int
