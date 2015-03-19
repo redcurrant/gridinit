@@ -56,7 +56,6 @@ set(CMAKE_C_FLAGS_DEBUG          "-O0 -fno-inline")
 set(CMAKE_C_FLAGS_RELEASE        "-O2")
 set(CMAKE_C_FLAGS_RELWITHDEBINFO "-O2 -fno-inline")
 set(CMAKE_C_FLAGS_MINSIZEREL     "-Os")
-set(CMAKE_INSTALL_PREFIX "/usr/local")
 
 add_definitions(-D_REENTRANT)
 add_definitions(-D_LARGE_FILES)
@@ -83,12 +82,6 @@ else()
 	endif()
 	MESSAGE("LD_LIBDIR guessed to ${LD_LIBDIR}")
 endif()
-
-if (PREFIX)
-	set(CMAKE_INSTALL_PREFIX ${PREFIX})
-endif (PREFIX)
-
-message(STATUS "Installation prefix : ${CMAKE_INSTALL_PREFIX}")
 
 ###-------------------------------------------------------------------------###
 
