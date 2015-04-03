@@ -55,7 +55,10 @@ run_command(int fd_out, const char *cmd)
 	dup2_or_exit(fd_out, fileno(stdout));
 	dup2_or_exit(fd_out, fileno(stderr));
 
-	execv(argv[0], argv);
+	const char *real_cmd = argv[0];
+	if (!g_path_is_absolute(real_cmd))
+		real_cmd = g_find_program_in_path(real_cmd);
+	execv(real_cmd, argv);
 	g_strfreev(argv);
 	exit(1);
 }
