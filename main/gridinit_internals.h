@@ -72,6 +72,10 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 # define CFG_KEY_GROUPSONLY "groups_only"
 #endif
 
+#ifndef  CFG_KEY_INHERIT
+# define CFG_KEY_INHERIT "inherit_env"
+#endif
+
 int __open_unix_server(const char *path);
 
 int __open_unix_client(const char *path);
