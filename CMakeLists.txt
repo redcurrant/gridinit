@@ -89,21 +89,6 @@ find_package(PkgConfig)
 pkg_check_modules(GLIB2 REQUIRED glib-2.0 gthread-2.0 gmodule-2.0)
 pkg_check_modules(LIBEVENT REQUIRED libevent)
 
-###--------------------###
-### sysmm availability ###
-###--------------------###
-set(SYSMM_LIBRARIES "-lsysmm")
-set(SYSMM_LIBRARY_DIRS "/usr/${LD_LIBDIR}")
-if (SYSMM_LIBDIR)
-	set(SYSMM_LIBRARY_DIRS ${SYSMM_LIBDIR})
-endif ()
-find_library(SYSMM_FOUND libsysmm.so ${SYSMM_LIBRARY_DIRS} NO_DEFAULT_PATH)
-if (SYSMM_FOUND)
-	message(STATUS "FOUND libsysmm.so : ${SYSMM_FOUND}")
-else()
-	message(STATUS "NOT FOUND libsysmm.so")
-endif()
-
 ###------------------------------------------------###
 ### explicit plugin directory for alerting modules ###
 ###------------------------------------------------###
@@ -122,8 +107,4 @@ include_directories(AFTER
 
 add_subdirectory(./lib)
 add_subdirectory(./main)
-
-if (SYSMM_FOUND)
-	add_subdirectory(./alert_spoolmess)
-endif()
 
