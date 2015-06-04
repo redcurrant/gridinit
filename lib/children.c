@@ -364,7 +364,7 @@ _child_exec(struct child_s *sd, int argc, char ** args)
 	if (g_path_is_absolute(cmd))
 		real_cmd = g_strdup(cmd);
 
-	if (!real_cmd || NULL == (real_cmd = g_find_program_in_path(cmd)))
+	if (!real_cmd && NULL == (real_cmd = g_find_program_in_path(cmd)))
 		FATAL("'%s' not executable or not found in PATH:%s", cmd, g_getenv("PATH"));
 	else {
 		execve(real_cmd, args, env);
