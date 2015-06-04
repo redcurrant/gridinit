@@ -342,7 +342,7 @@ _child_build_env(struct child_s *sd)
 		s = g_strdup_printf("%s=%s", k, v);
 		new_env[i++] = strdup(s);
 		g_free(s);
-		DEBUG("[%s] setenv(%s,%s)", sd->key, k, v);
+		TRACE("[%s] setenv(%s,%s)", sd->key, k, v);
 	}
 
 	return new_env;
@@ -353,7 +353,7 @@ _child_exec(struct child_s *sd, int argc, char ** args)
 {
 	char **env;
 	const gchar *cmd = args[0];
-	gchar *real_cmd;
+	gchar *real_cmd = NULL;
 
 	(void) argc;
 	/* If the target command is just a filename, then try to find
