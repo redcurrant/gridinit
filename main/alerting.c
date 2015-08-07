@@ -84,7 +84,13 @@ gridinit_alerting_configure(const gchar *path, const gchar *symbol,
 void
 gridinit_alerting_send(int event, const char *msg)
 {
-	WARN("Process alert: %s", msg);
+	if (event == GRIDINIT_EVENT_BROKEN) {
+		ERROR("Process alert: %s", msg);
+	} else if (event == GRIDINIT_EVENT_RESTARTED) {
+		WARN("Process alert: %s", msg);
+	} else {
+		NOTICE("Process alert: %s", msg);
+	}
 
 	if (!module || !handle || !handle->send)
 		return;
