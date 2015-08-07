@@ -76,6 +76,10 @@ struct server_sock_s {
 	struct stat unix_stat_sock;
 };
 
+int main_log_level_default = 0x7F;
+int main_log_level = 0x7F;
+gint64 main_log_level_update = 0;
+
 static GList *list_of_servers = NULL;
 static GList *list_of_signals = NULL; /* list of libevent events */
 
@@ -95,6 +99,7 @@ static volatile int flag_daemon = 0;
 static volatile int flag_running = ~0;
 static volatile int flag_cfg_reload = 0;
 static volatile int flag_check_socket = 0;
+static volatile int flag_more_verbose = 0;
 
 static volatile gint32 default_uid = -1;
 static volatile gint32 default_gid = -1;
@@ -109,6 +114,36 @@ static void servers_ensure(void);
 
 
 /* ------------------------------------------------------------------------- */
+
+static void
+logger_verbose(void)
+{
+	main_log_level = (main_log_level * 2) + 1;
+	main_log_level_update = g_get_monotonic_time();
+}
+
+static void
+logger_verbose_default(void)
+{
+	main_log_level_default = (main_log_level_default * 2) + 1;
+	main_log_level = main_log_level_default;
+}
+
+static void
+logger_init_level(int l)
+{
+	main_log_level_default = main_log_level = (l?(l|0x7F):0);
+}
+
+#define REAL_LEVEL(L)   (guint32)((L) >> G_LOG_LEVEL_USER_SHIFT)
+#define ALLOWED_LEVEL() REAL_LEVEL(main_log_level)
+
+static gboolean
+glvl_allowed(register GLogLevelFlags lvl)
+{
+	return !flag_quiet && ((lvl & 0x7F)
+		|| (ALLOWED_LEVEL() >= REAL_LEVEL(lvl)));
+}
 
 static struct event timer_event;
 
@@ -222,22 +257,22 @@ alert_proc_started(void *udata, struct child_info_s *ci)
 static void
 thread_ignore_signals(void)
 {
-        sigset_t new_set, old_set;
+	sigset_t new_set, old_set;
 
-        sigemptyset(&new_set);
-        sigemptyset(&old_set);
-        sigaddset(&new_set, SIGQUIT);
-        sigaddset(&new_set, SIGINT);
-        sigaddset(&new_set, SIGALRM);
-        sigaddset(&new_set, SIGHUP);
-        sigaddset(&new_set, SIGCONT);
-        sigaddset(&new_set, SIGUSR1);
-        sigaddset(&new_set, SIGUSR2);
-        sigaddset(&new_set, SIGTERM);
-        sigaddset(&new_set, SIGPIPE);
-        sigaddset(&new_set, SIGCHLD);
-        if (0 > sigprocmask(SIG_BLOCK, &new_set, &old_set))
-                ALERT("Some signals could not be blocked : %s", strerror(errno));
+	sigemptyset(&new_set);
+	sigemptyset(&old_set);
+	sigaddset(&new_set, SIGQUIT);
+	sigaddset(&new_set, SIGINT);
+	sigaddset(&new_set, SIGALRM);
+	sigaddset(&new_set, SIGHUP);
+	sigaddset(&new_set, SIGCONT);
+	sigaddset(&new_set, SIGUSR1);
+	sigaddset(&new_set, SIGUSR2);
+	sigaddset(&new_set, SIGTERM);
+	sigaddset(&new_set, SIGPIPE);
+	sigaddset(&new_set, SIGCHLD);
+	if (0 > sigprocmask(SIG_BLOCK, &new_set, &old_set))
+		ALERT("Some signals could not be blocked : %s", strerror(errno));
 }
 
 /* COMMANDS management ----------------------------------------------------- */
@@ -496,11 +531,14 @@ __resolve_command(const gchar *n)
 static void
 supervisor_signal_handler(int s, short flags, void *udata)
 {
+g_printerr("??\n");
+
 	(void) udata;
 	(void) flags;
 
 	switch (s) {
-	case SIGUSR1: /* ignored */
+	case SIGUSR1:
+		flag_more_verbose = ~0;
 		return;
 	case SIGUSR2: 
 		flag_check_socket = ~0;
@@ -1634,13 +1672,29 @@ glvl_to_lvl(GLogLevelFlags lvl)
 	switch (lvl & G_LOG_LEVEL_MASK) {
 		case G_LOG_LEVEL_ERROR:
 		case G_LOG_LEVEL_CRITICAL:
+			return LOG_ERR;
 		case G_LOG_LEVEL_WARNING:
-			return LOG_NOTICE;
+			return LOG_WARNING;
 		case G_LOG_LEVEL_MESSAGE:
+			return LOG_NOTICE;
 		case G_LOG_LEVEL_INFO:
 		case G_LOG_LEVEL_DEBUG:
-		default:
 			return LOG_INFO;
+		default:
+			break;
+	}
+	switch (lvl >> G_LOG_LEVEL_USER_SHIFT) {
+		case 0:
+		case 1:
+			return LOG_ERR;
+		case 2:
+			return LOG_WARNING;
+		case 4:
+			return LOG_NOTICE;
+		case 8:
+			return LOG_INFO;
+		default:
+			return LOG_DEBUG;
 	}
 }
 
@@ -1697,6 +1751,9 @@ logger_syslog(const gchar *log_domain, GLogLevelFlags log_level,
 {
 	(void) user_data;
 
+	if (!glvl_allowed(log_level))
+		return;
+
 	GString *gstr = g_string_new("");
 
 	g_string_append_printf(gstr, "%d %04X", getpid(), get_thread_id());
@@ -1725,6 +1782,9 @@ logger_stderr(const gchar *log_domain, GLogLevelFlags log_level,
 
 	(void) user_data;
 
+	if (!glvl_allowed(log_level))
+		return;
+
 	gstr = g_string_sized_new(256);
 	gettimeofday(&tv, NULL);
 
@@ -1746,7 +1806,7 @@ __parse_options(int argc, char ** args)
 	int c;
 	GError *error_local = NULL;
 
-	while (-1 != (c = getopt(argc, args, "qhdg:s:"))) {
+	while (-1 != (c = getopt(argc, args, "vqhdg:s:"))) {
 		switch (c) {
 			case 'd':
 				flag_daemon = ~0;
@@ -1768,8 +1828,12 @@ __parse_options(int argc, char ** args)
 				}
 				g_strlcpy(syslog_id, optarg, sizeof(syslog_id));
 				break;
+			case 'v':
+				logger_verbose_default();
+				break;
 			case 'q':
 				flag_quiet = ~0;
+				logger_init_level(GRID_LOGLVL_ERROR);
 				break;
 			default:
 				if (!flag_quiet)
@@ -1882,6 +1946,7 @@ main(int argc, char ** args)
 
 	g_strlcpy(sock_path, GRIDINIT_SOCK_PATH, sizeof(sock_path));
 
+	logger_init_level(GRID_LOGLVL_INFO);
 	g_log_set_default_handler(logger_stderr, NULL);
 	g_set_prgname(args[0]);
 	supervisor_children_init();
@@ -1961,6 +2026,20 @@ main(int argc, char ** args)
 			break;
 		if (flag_check_socket)
 			servers_ensure();
+		if (flag_more_verbose) {
+			NOTICE("Increasing verbosity for 15 minutes");
+			logger_verbose();
+			flag_more_verbose = 0;
+		}
+
+		if (main_log_level_update) {
+			gint64 when = g_get_monotonic_time() - (15 * G_TIME_SPAN_MINUTE);
+			if (main_log_level_update < when) {
+				NOTICE("Verbosity reset to its default value");
+				main_log_level = main_log_level_default;
+				main_log_level_update = 0;
+			}
+		}
 
 		/* Be sure to wake */
 		alarm(1);
