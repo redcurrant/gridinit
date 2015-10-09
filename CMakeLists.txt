@@ -66,9 +66,12 @@ add_definitions(-DG_ERRORCHECK_MUTEXES)
 add_definitions(-DG_DISABLE_DEPRECATED=1)
 add_definitions(-DHAVE_SOCKLEN_T)
 
-if (DEFINED GRIDINIT_SOCK_PATH)
-	add_definitions(-DGRIDINIT_SOCK_PATH="${GRIDINIT_SOCK_PATH}")
+if (NOT DEFINED GRIDINIT_SOCK_PATH)
+	set(GRIDINIT_SOCK_PATH "/var/run/gridinit.sock")
 endif()
+
+add_definitions(-DGRIDINIT_SOCK_PATH="${GRIDINIT_SOCK_PATH}")
+MESSAGE("GRIDINIT_SOCK_PATH ${GRIDINIT_SOCK_PATH}")
 
 if (LD_LIBDIR)
 	MESSAGE("LD_LIBDIR explicitely set to ${LD_LIBDIR}")
