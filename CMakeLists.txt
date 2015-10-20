@@ -21,12 +21,12 @@ set(CMAKE_C_FLAGS "-g -Wall -Wextra -Wunused -pipe -std=gnu99")
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fPIC")
 
 if (CMAKE_COMPILER_IS_GNUCC)
-	EXEC_PROGRAM(gcc ARGS --version OUTPUT_VARIABLE CMAKE_C_COMPILER_VERSION)
 	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-variadic-macros")
 	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wsequence-point")
 	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wredundant-decls")
 	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wshadow")
 
+	# gcc >= 4.2
 	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wcomment")
 	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wmain")
 	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wparentheses")
@@ -34,9 +34,8 @@ if (CMAKE_COMPILER_IS_GNUCC)
 	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wunsafe-loop-optimizations")
 	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wunused-but-set-parameter")
 	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wunused-but-set-variable")
-	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wframe-larger-than=8192")
-	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -finline-limit=8192")
 
+	# gcc >= 4.6
 	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wmissing-prototypes")
 	#set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Winline")
 	#set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wconversion")
