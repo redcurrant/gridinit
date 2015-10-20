@@ -21,21 +21,21 @@ set(CMAKE_C_FLAGS "-g -Wall -Wextra -Wunused -pipe -std=gnu99")
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fPIC")
 
 if (CMAKE_COMPILER_IS_GNUCC)
-    EXEC_PROGRAM(gcc ARGS --version OUTPUT_VARIABLE CMAKE_C_COMPILER_VERSION)
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-variadic-macros")
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wsequence-point")
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wredundant-decls")
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wshadow")
+	EXEC_PROGRAM(gcc ARGS --version OUTPUT_VARIABLE CMAKE_C_COMPILER_VERSION)
+	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-variadic-macros")
+	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wsequence-point")
+	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wredundant-decls")
+	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wshadow")
 
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wcomment")
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wmain")
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wparentheses")
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wfloat-equal")
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wunsafe-loop-optimizations")
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wunused-but-set-parameter")
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wunused-but-set-variable")
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wframe-larger-than=8192")
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -finline-limit=8192")
+	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wcomment")
+	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wmain")
+	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wparentheses")
+	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wfloat-equal")
+	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wunsafe-loop-optimizations")
+	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wunused-but-set-parameter")
+	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wunused-but-set-variable")
+	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wframe-larger-than=8192")
+	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -finline-limit=8192")
 
 	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wmissing-prototypes")
 	#set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Winline")
@@ -81,15 +81,12 @@ else()
 	MESSAGE("LD_LIBDIR guessed to ${LD_LIBDIR}")
 endif()
 
-###-------------------------------------------------------------------------###
 
 find_package(PkgConfig)
 pkg_check_modules(GLIB2 REQUIRED glib-2.0 gthread-2.0 gmodule-2.0)
 pkg_check_modules(LIBEVENT REQUIRED libevent)
 
-###------------------------------------------------###
 ### explicit plugin directory for alerting modules ###
-###------------------------------------------------###
 
 set(GRIDINIT_PLUGINS_DIRECTORY "${LD_LIBDIR}/gridinit")
 if(GRIDINIT_PLUGINS)
@@ -98,10 +95,7 @@ endif(GRIDINIT_PLUGINS)
 
 set(CMAKE_LIBRARY_PATH "")
 set(CMAKE_INCLUDE_PATH "")
-include_directories(AFTER
-		${GLIB2_INCLUDE_DIRS})
-
-###-------------------------------------------------------------------------###
+include_directories(AFTER ${GLIB2_INCLUDE_DIRS})
 
 add_subdirectory(./lib)
 add_subdirectory(./main)
