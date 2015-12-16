@@ -99,6 +99,8 @@ static volatile int flag_check_socket = 0;
 static volatile gint32 default_uid = -1;
 static volatile gint32 default_gid = -1;
 
+static volatile gboolean inherit_env = 0;
+
 static GHashTable *default_env = NULL;
 
 static gboolean _cfg_reload(gboolean services_only, GError **err);
@@ -1278,6 +1280,9 @@ _cfg_section_service(GKeyFile *kf, const gchar *section, GError **err)
 
 	/* Loads the environment */
 	supervisor_children_clearenv(str_key);
+	if (inherit_env)
+		supervisor_children_inherit_env (str_key);
+	(void) _cfg_service_load_env(kf, "Default", str_key, NULL);
 	if (!_cfg_service_load_env(kf, section, str_key, err)) {
 		*err = g_error_printf(LOG_DOMAIN, errno, "Failed to load environment for service [%s]", str_key);
 		goto label_exit;
@@ -1373,6 +1378,9 @@ _cfg_section_default(GKeyFile *kf, const gchar *section, GError **err)
 
 		str = g_key_file_get_string(kf, section, *p_key, NULL);
 
+		if (!g_ascii_strcasecmp(*p_key, CFG_KEY_INHERIT)) {
+			inherit_env = g_ascii_strtoll(str, NULL, 10);
+		}
 		if (!g_ascii_strcasecmp(*p_key, CFG_KEY_LIMIT_CORESIZE)) {
 			limit_core_size = g_ascii_strtoll(str, NULL, 10) * 1024LL * 1024LL;
 		}
@@ -1704,7 +1712,7 @@ logger_syslog(const gchar *log_domain, GLogLevelFlags log_level,
 
 	_append_message(gstr, message);
 
-	syslog(glvl_to_lvl(log_level), gstr->str);
+	syslog(glvl_to_lvl(log_level), "%s", gstr->str);
 	g_string_free(gstr, TRUE);
 }
 
