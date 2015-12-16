@@ -70,6 +70,11 @@ if (DEFINED GRIDINIT_SOCK_PATH)
 	add_definitions(-DGRIDINIT_SOCK_PATH="${GRIDINIT_SOCK_PATH}")
 endif()
 
+if (DEFINED PREFIX)
+	set(CMAKE_INSTALL_PREFIX ${PREFIX})
+endif()
+MESSAGE(STATUS "Installation prefix: ${CMAKE_INSTALL_PREFIX}")
+
 if (LD_LIBDIR)
 	MESSAGE("LD_LIBDIR explicitely set to ${LD_LIBDIR}")
 else()

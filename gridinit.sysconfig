@@ -1,0 +1,3 @@
+# Configuration file for gridinit
+#gridinitconf=/GRID/common/conf/gridinit.conf
+#gridinitlog4crc=/GRID/common/conf/gridinit.log4crc
