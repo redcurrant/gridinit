@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="ISO-8859-1"?>
+<!DOCTYPE log4c SYSTEM "">
+<log4c>
+    <config>
+        <bufsize>2048</bufsize>
+        <debug level="4"/>
+        <nocleanup>0</nocleanup>
+    </config>
+
+    <category name="root" priority="info" appender="RC,common,common,gridinit"/>
+    <appender name="RC,common,common,gridinit" type="syslog" layout="basic_r"/>
+    <layout name="basic_r" type="basic_r"/>
+
+</log4c>
