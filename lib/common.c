@@ -38,7 +38,7 @@ g_error_printf(const char *dom, int code, const char *fmt, ...)
 	str = g_strdup_vprintf (fmt, va);
 	va_end(va);
 
-	e = g_error_new(g_quark_from_static_string(dom), code, str);
+	e = g_error_new(g_quark_from_static_string(dom), code, "%s", str);
 	g_free(str);
 	return e;
 }
