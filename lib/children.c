@@ -1010,9 +1010,8 @@ supervisor_children_set_working_directory(const gchar *key, const gchar *dir)
 
 int
 supervisor_children_setenv(const gchar *key, const gchar *envkey,
-	const gchar *envval)
+	const gchar *envval, gchar separator)
 {
-	GSList *kv;
 	struct child_s *sd;
 
 	if (!key || !envkey ||!envval) {
@@ -1024,10 +1023,31 @@ supervisor_children_setenv(const gchar *key, const gchar *envkey,
 		return -1;
 	}
 
-	kv = NULL;
-	kv = g_slist_append(kv, g_strdup(envkey));
-	kv = g_slist_append(kv, g_strdup(envval));
-	sd->env = g_slist_concat(sd->env, kv);
+	gboolean done = FALSE;
+	for (GSList *l=sd->env; l && l->next ;l=l->next->next) {
+		GSList *k = l;
+		GSList *v = l->next;
+		if (!strcmp(envkey, (gchar*) k->data)) {
+			if (!separator) {
+				TRACE("Replacing [%s] by [%s]", envkey, envval);
+				g_free (v->data);
+				v->data = g_strdup (envval);
+			} else {
+				TRACE("Prepending [%s] with [%s]", envkey, envval);
+				gchar *old = v->data;
+				v->data = g_strdup_printf("%s%c%s", envval, separator, old);
+				g_free (old);
+			}
+			done = TRUE;
+			break;
+		}
+	}
+	if (!done) {
+		TRACE("Initiating [%s] with [%s]", envkey, envval);
+		GSList *kv = g_slist_append(NULL, g_strdup(envkey));
+		kv = g_slist_append(kv, g_strdup(envval));
+		sd->env = g_slist_concat(sd->env, kv);
+	}
 	errno = 0;
 	return 0;
 }
@@ -1038,7 +1058,7 @@ supervisor_children_inherit_env(const gchar *key)
 	gchar **keys = g_listenv();
 	if (keys) {
 		for (gchar **p = keys; *p ;++p)
-			(void) supervisor_children_setenv (key, *p, g_getenv(*p));
+			(void) supervisor_children_setenv (key, *p, g_getenv(*p), '\0');
 		g_strfreev(keys);
 	}
 }

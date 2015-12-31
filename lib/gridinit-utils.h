@@ -187,10 +187,11 @@ int supervisor_children_set_working_directory(const gchar *key,
  * @param key
  * @param envkey
  * @param envval
+ * @param separator if not 0, keep the previous value and prepends the new value
  * @return
  */
 int supervisor_children_setenv(const gchar *key, const gchar *envkey,
-	const gchar *envval);
+	const gchar *envval, gchar separator);
 
 void supervisor_children_inherit_env(const gchar *key);
 

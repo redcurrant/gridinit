@@ -159,7 +159,7 @@ _str_set_array(gboolean concat, gchar ***dst, gchar *str)
 		g_strfreev(*dst);
 		*dst = NULL;
 	}
-		
+
 	if (!(tokens = g_strsplit(str, ",", 0))) {
 		FATAL("split error");
 		abort();
@@ -320,7 +320,7 @@ service_run_groupv(int nb_groups, char **groupv, void *udata, supervisor_cb_f cb
 					cb(udata, &ci);
 				}
 				else {
-					if (bevent) 
+					if (bevent)
 						evbuffer_add_printf(bufferevent_get_output(bevent), "%d %s\n", errno, what);
 					if (errno == ENOENT)
 						TRACE("Service not found [%s]\n", what);
@@ -339,7 +339,7 @@ command_start(struct bufferevent *bevent, int argc, char **argv)
 		(void) udata;
 
 		supervisor_children_repair(ci->key);
-		
+
 		switch (supervisor_children_status(ci->key, TRUE)) {
 		case 0:
 			INFO("Already started [%s]", ci->key);
@@ -362,7 +362,7 @@ command_start(struct bufferevent *bevent, int argc, char **argv)
 	return 0;
 }
 
-static int 
+static int
 command_stop(struct bufferevent *bevent, int argc, char **argv)
 {
 	void stop_process(void *udata, struct child_info_s *ci) {
@@ -422,7 +422,7 @@ command_show(struct bufferevent *bevent, int argc, char **argv)
 {
 	void print_process(void *udata, struct child_info_s *ci) {
 		(void) udata;
-		evbuffer_add_printf(bufferevent_get_output(bevent), 
+		evbuffer_add_printf(bufferevent_get_output(bevent),
 				"%d "
 				"%d %d %d "
 				"%u %u "
@@ -438,7 +438,7 @@ command_show(struct bufferevent *bevent, int argc, char **argv)
 			ci->uid, ci->gid,
 			ci->key, ci->group, ci->cmd);
 	}
-	
+
 	(void) argc;
 	(void) argv;
 
@@ -474,7 +474,7 @@ command_reload(struct bufferevent *bevent, int argc, char **argv)
 {
 	GError *error_local = NULL;
 	guint count;
-	
+
 	(void) argc;
 	(void) argv;
 
@@ -531,16 +531,13 @@ __resolve_command(const gchar *n)
 static void
 supervisor_signal_handler(int s, short flags, void *udata)
 {
-g_printerr("??\n");
-
-	(void) udata;
-	(void) flags;
+	(void) udata, (void) flags;
 
 	switch (s) {
 	case SIGUSR1:
 		flag_more_verbose = ~0;
 		return;
-	case SIGUSR2: 
+	case SIGUSR2:
 		flag_check_socket = ~0;
 		return;
 	case SIGPIPE: /* ignored */
@@ -612,7 +609,7 @@ __event_command_in(struct bufferevent *bevent, void *udata)
 			g_strfreev(argv);
 		}
 		free(cmd);
-	
+
 		bufferevent_flush(bevent, EV_WRITE|EV_READ, BEV_FINISHED);
 		bufferevent_disable(bevent, EV_READ);
 		bufferevent_enable(bevent, EV_WRITE);
@@ -640,10 +637,10 @@ __event_accept(int fd, short flags, void *udata)
 	int fd_client;
 	int i_opt, i_rc;
 	struct event_base *libevents_handle;
-	
+
 	(void) flags;
 	libevents_handle = udata;
-	
+
 	ss_len = sizeof(ss);
 	fd_client = accept(fd, (struct sockaddr*)&ss, &ss_len);
 	if (fd_client < 0) {
@@ -676,13 +673,13 @@ __event_accept(int fd, short flags, void *udata)
 	if (i_rc == -1)
 		WARN("fd=%i Cannot check the socket type (%s)", fd_client, strerror(errno));
 	else if (i_opt == SOCK_STREAM && ss.ss_family == AF_INET) {
-		
+
 		/* TCP_QUICKACK */
 		i_opt = 1;
 		i_rc = setsockopt(fd_client, IPPROTO_TCP, TCP_QUICKACK, (void*)&i_opt, sizeof(i_opt));
 		if (i_rc == -1)
 			WARN("fd=%i Cannot set TCP_QUICKACK mode on socket (%s)", fd_client, strerror(errno));
-		
+
 		/* TCP_NODELAY */
 		i_opt = 1;
 		i_rc = setsockopt(fd_client, IPPROTO_TCP, TCP_NODELAY, (void*)&i_opt, sizeof(i_opt));
@@ -715,7 +712,7 @@ servers_is_unix(struct server_sock_s *server)
 
 	if (server->fd < 0)
 		return FALSE;
-		
+
 	if (0 == getsockname(server->fd, (struct sockaddr*) &ss, &ss_len)) {
 		if (ss.ss_family==AF_UNIX || ss.ss_family==AF_LOCAL) {
 			return TRUE;
@@ -730,7 +727,7 @@ static int
 servers_is_the_same(struct server_sock_s *server)
 {
 	struct stat stat_sock, stat_path;
-	
+
 	bzero(&stat_sock, sizeof(stat_sock));
 	bzero(&stat_path, sizeof(stat_path));
 
@@ -748,7 +745,7 @@ servers_unmonitor_one(struct server_sock_s *server)
 		return ;
 	}
 
-	/* Stop the libevent management right now */	
+	/* Stop the libevent management right now */
 	if (event_pending(&(server->event), EV_READ, NULL))
 		event_del(&(server->event));
 
@@ -784,7 +781,7 @@ servers_monitor_one(struct server_sock_s *server)
 			g_printerr("Error with socket [%s]\n", server->url);
 		return FALSE;
 	}
-	
+
 	/* For unix sockets, remember the stat for further checks */
 	if (ss.ss_family==AF_UNIX || ss.ss_family==AF_LOCAL) {
 		if (0 != stat(((struct sockaddr_un*)&ss)->sun_path, &(server->unix_stat_path))) {
@@ -826,9 +823,9 @@ static int
 servers_monitor_all(void)
 {
 	GList *l;
-	
+
 	TRACE("About to monitor all the server sockets");
-	
+
 	for (l=list_of_servers; l ;l=l->next) {
 		struct server_sock_s *s = l->data;
 		if (!servers_monitor_one(s))
@@ -888,8 +885,8 @@ label_error:
 	return -1;
 }
 
-/** 
- * Stops the server socket then 
+/**
+ * Stops the server socket then
  */
 static void
 servers_clean(void)
@@ -915,14 +912,14 @@ servers_clean(void)
 	list_of_servers = NULL;
 }
 
-/** 
+/**
  * Reopens all the UNIX server sockets bond on paths that changed.
  */
 static void
 servers_ensure(void)
 {
 	GList *l;
-	
+
 	flag_check_socket = 0;
 	TRACE("About to ensure the server sockets");
 
@@ -1005,14 +1002,19 @@ _cfg_value_is_true(const gchar *val)
 		|| 0==g_ascii_strcasecmp(val,"on"));
 }
 
+static GHashTable *
+_make_empty_env (void)
+{
+	return g_hash_table_new_full (g_str_hash, g_str_equal, g_free, g_free);
+}
+
 static GHashTable*
 _cfg_extract_parameters (GKeyFile *kf, const char *s, const char *p, GError **err)
 {
 	gchar **all_keys=NULL, **current_key=NULL;
 	gsize size=0;
-	GHashTable *ht=NULL;
 
-	ht = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, g_free);
+	GHashTable *ht = _make_empty_env ();
 
 	all_keys = g_key_file_get_keys (kf, s, &size, err);
 	if (!all_keys)
@@ -1080,7 +1082,7 @@ uid_exists(const gchar *str, gint32 *id)
 
 	if (0 != getpwnam_r(str, &pwd, buf, sizeof(buf), &p_pwd))
 		return FALSE;
-		
+
 	*id = pwd.pw_uid;
 	return TRUE;
 }
@@ -1102,46 +1104,38 @@ gid_exists(const gchar *str, gint32 *id)
 
 	if (0 != getgrnam_r(str, &grp, buf, sizeof(buf), &p_grp))
 		return FALSE;
-		
+
 	*id = grp.gr_gid;
 	return TRUE;
 }
 
-static gboolean
-_cfg_service_load_env(GKeyFile *kf, const gchar *section, const gchar *str_key, GError **err)
+static void
+_cfg_service_load_env(GKeyFile *kf, const gchar *section, const gchar *str_key)
 {
-	gboolean rc = FALSE;
-	GHashTable *ht_env;
-	GHashTableIter iter_env;
-	gpointer k, v;
-	
-	ht_env = _cfg_extract_parameters(kf, section, "env.", err);
-	if (ht_env && g_hash_table_size(ht_env) == 0) {
-		g_hash_table_destroy(ht_env);
-		ht_env = default_env;
+	GHashTable *ht_env = _cfg_extract_parameters(kf, section, "env.", NULL);
+	if (!ht_env || !g_hash_table_size(ht_env)) {
+		TRACE("No env found for [%s]", section);
+		if (ht_env)
+			g_hash_table_destroy (ht_env);
+		return ;
 	}
 
-	if (!ht_env || g_hash_table_size(ht_env) == 0)
-		return FALSE;
+	g_assert (ht_env != NULL && g_hash_table_size (ht_env) > 0);
 
+	GHashTableIter iter_env;
+	gchar *k, *v;
 	g_hash_table_iter_init(&iter_env, ht_env);
-	while (g_hash_table_iter_next(&iter_env, &k, &v)) {
-		if (0 != supervisor_children_setenv(str_key, (gchar*)k, (gchar*)v)) {
+	while (g_hash_table_iter_next(&iter_env, (gpointer*)&k, (gpointer*)&v)) {
+		if (0 != supervisor_children_setenv(str_key, k, v, inherit_env ? ':' : '\0'))
 			WARN("[%s] saved environment [%s]=[%s] : %s",
 				str_key, (gchar*)k, (gchar*)v, strerror(errno));
-			goto exit;
-		}
-		DEBUG("[%s] saved environment variable [%s]=[%s]",
-				str_key, (gchar*)k, (gchar*)v);
+		else
+			DEBUG("[%s] saved environment variable [%s]=[%s]",
+					str_key, (gchar*)k, (gchar*)v);
 	}
 
 	DEBUG("[%s] environment saved", str_key);
-	rc = TRUE;
-
-exit:
-	if (ht_env && ht_env != default_env)
-		g_hash_table_destroy(ht_env);
-	return rc;
+	g_hash_table_destroy(ht_env);
 }
 
 static gboolean
@@ -1305,7 +1299,7 @@ _cfg_section_service(GKeyFile *kf, const gchar *section, GError **err)
 		gint64 i64 = g_ascii_strtoll(str_limit_core, NULL, 10);
 		supervisor_children_set_limit(str_key, SUPERV_LIMIT_CORE_SIZE, i64 * 1024LL * 1024LL);
 	}
-	
+
 	/* Explicit working directory */
 	if (str_wd) {
 		if (!g_file_test(str_wd, G_FILE_TEST_IS_DIR|G_FILE_TEST_IS_EXECUTABLE))
@@ -1320,17 +1314,15 @@ _cfg_section_service(GKeyFile *kf, const gchar *section, GError **err)
 	supervisor_children_clearenv(str_key);
 	if (inherit_env)
 		supervisor_children_inherit_env (str_key);
-	(void) _cfg_service_load_env(kf, "Default", str_key, NULL);
-	if (!_cfg_service_load_env(kf, section, str_key, err)) {
-		*err = g_error_printf(LOG_DOMAIN, errno, "Failed to load environment for service [%s]", str_key);
-		goto label_exit;
-	}
+
+	_cfg_service_load_env(kf, "Default", str_key);
+	_cfg_service_load_env(kf, section, str_key);
 
 	/* reset/set the process's group */
 	supervisor_children_set_group(str_key, NULL);
 	if (str_group)
 		supervisor_children_set_group(str_key, str_group);
-	
+
 	rc = TRUE;
 
 label_exit:
@@ -1358,7 +1350,7 @@ _cfg_section_alert(GKeyFile *kf, const gchar *section, GError **err)
 		gchar *str;
 
 		str = g_key_file_get_string(kf, section, *p_key, NULL);
-		
+
 		if (!g_ascii_strcasecmp(*p_key, "plugin")) {
 			if (*cfg_plugin)
 				NOTICE("Alerting plugin already known : plugin=[%s]", cfg_plugin);
@@ -1391,7 +1383,7 @@ _cfg_section_alert(GKeyFile *kf, const gchar *section, GError **err)
 		if (!rc)
 			return FALSE;
 	}
-	
+
 	return TRUE;
 }
 
@@ -1475,6 +1467,8 @@ _cfg_section_default(GKeyFile *kf, const gchar *section, GError **err)
 
 	/* Extract the default environment */
 	default_env = _cfg_extract_parameters(kf, section, "env.", NULL);
+	if (!default_env)
+		default_env = _make_empty_env ();
 
 	/* Set the defautl limits for the services (apply them directly to the gridinit itself) */
 	int rc0 = supervisor_limit_set(SUPERV_LIMIT_CORE_SIZE, limit_core_size);
@@ -1573,7 +1567,7 @@ _cfg_reload(gboolean services_only, GError **err)
 {
 	gboolean rc = FALSE;
 	GKeyFile *kf = NULL;
-	
+
 	kf = g_key_file_new();
 
 	if (!g_key_file_load_from_file(kf, config_path, 0, err)) {
@@ -1639,11 +1633,11 @@ _cfg_reload(gboolean services_only, GError **err)
 
 	rc = TRUE;
 	INFO("Configuration loaded from [%s]", config_path);
-	
+
 label_exit:
 	if (kf)
 		g_key_file_free(kf);
-	return rc;	
+	return rc;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1841,7 +1835,7 @@ __parse_options(int argc, char ** args)
 				exit(1);
 		}
 	}
-	
+
 	if (flag_help) {
 		main_usage();
 		exit(0);
@@ -1854,7 +1848,7 @@ __parse_options(int argc, char ** args)
 		exit(1);
 		return;
 	}
-	
+
 	if (*syslog_id) {
 		openlog(g_get_prgname(), LOG_PID, LOG_LOCAL0);
 		g_log_set_default_handler(logger_syslog, NULL);
@@ -1867,7 +1861,7 @@ __parse_options(int argc, char ** args)
 	if (!_cfg_reload(FALSE, &error_local)) {
 		if (!flag_quiet)
 			ERROR("Configuration loading error from [%s] : %s\n", config_path, error_local->message);
-		exit(1);	
+		exit(1);
 	}
 }
 
@@ -1895,7 +1889,7 @@ is_gridinit_running(const gchar *path)
 {
 	int rc, usock;
 	struct sockaddr_un sun;
-	
+
 	bzero(&sun, sizeof(sun));
 	sun.sun_family = AF_UNIX;
 	g_strlcpy(sun.sun_path, path, sizeof(sun.sun_path) - 1);
@@ -1932,7 +1926,7 @@ main(int argc, char ** args)
 	guint proc_count;
 	int rc = 1;
 	struct event_base *libevents_handle = NULL;
-	
+
 	void postfork(void *udata) {
 		(void) udata;
 		if (libevents_handle)
@@ -1970,13 +1964,13 @@ main(int argc, char ** args)
 		freopen( "/dev/null", "w", stderr);
 		write_pid_file();
 	}
-	
+
 	if (-1 == servers_save_unix(sock_path)) {
 		ERROR("Failed to open the UNIX socket for commands : %s",
 			strerror(errno));
 		goto label_exit;
 	}
-	
+
 	/* Starts the network and the signal management */
 	DEBUG("Initiating the network and signals management");
 	libevents_handle = event_init();
@@ -1998,7 +1992,7 @@ main(int argc, char ** args)
 	}
 
 	timer_event_arm(TRUE);
-	
+
 	DEBUG("Starting the event loop!");
 
 	/* start all the enabled processes */
