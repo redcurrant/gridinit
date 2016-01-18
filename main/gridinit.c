@@ -1950,9 +1950,12 @@ main(int argc, char ** args)
 	if (is_gridinit_running(sock_path)) {
 		FATAL("A gridinit is probably already running,"
 			" someone listens to UNIX sock path [%s]", sock_path);
-		g_printerr("A gridinit is probably already running,"
-			" someone listens to UNIX sock path [%s]\n", sock_path);
 		goto label_exit;
+	}
+
+	if (flag_daemon || *syslog_id) {
+		freopen( "/dev/null", "w", stdout);
+		freopen( "/dev/null", "w", stderr);
 	}
 
 	if (flag_daemon) {
@@ -1960,8 +1963,6 @@ main(int argc, char ** args)
 			FATAL("Failed to daemonize : %s", strerror(errno));
 			goto label_exit;
 		}
-		freopen( "/dev/null", "w", stdout);
-		freopen( "/dev/null", "w", stderr);
 		write_pid_file();
 	}
 
